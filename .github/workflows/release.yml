@@ -39,14 +39,14 @@ jobs:
             target: x86_64-pc-windows-msvc
             test: true
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           path: improv
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2.8.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: improv
           key: release-${{ matrix.target }}
@@ -106,7 +106,7 @@ jobs:
           else
             tar czf "dist/${staging}.tar.gz" "$staging"
           fi
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dist-${{ matrix.target }}
           path: improv/dist/*
@@ -127,7 +127,7 @@ jobs:
       matrix:
         pg: [15, 16, 17, 18]
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           path: improv
@@ -142,7 +142,7 @@ jobs:
             test "$(sed -n 's/^version = "\(.*\)"/\1/p' crates/pg_improv/Cargo.toml | head -1)" = "${REF_NAME#v}"
           fi
           ci/manylinux.sh ci/pg_improv-dist.sh "$PG" dist
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dist-pg${{ matrix.pg }}
           path: improv/dist/*
@@ -160,7 +160,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 75
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           path: improv
@@ -187,7 +187,7 @@ jobs:
           mkdir -p "$staging" dist
           cp "$ext" crates/duckdb_improv/README.md LICENSE-APACHE LICENSE-MIT "$staging/"
           tar czf "dist/${staging}.tar.gz" "$staging"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dist-duckdb
           path: improv/dist/*
@@ -205,10 +205,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: dist-*
           path: dist
@@ -233,7 +233,7 @@ jobs:
             ci/packages.sh pg "$ver" "$pg" "dist/pg_improv-$ver-pg$pg-x86_64-linux.tar.gz" pkg
           done
           ci/install-test.sh "$ver" pkg
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dist-packages
           path: pkg/*
@@ -250,16 +250,16 @@ jobs:
       # certificate naming this workflow and tag. No signing secret exists.
       id-token: write
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: dist-*
           path: dist
           merge-multiple: true
       - uses: dtolnay/rust-toolchain@stable
-      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
         with:
           cosign-release: v3.1.4
       - name: SBOMs, SHA256SUMS, signature
@@ -287,7 +287,7 @@ jobs:
             echo "CHANGELOG.md has no '## [${REF_NAME#v}]' section" >&2
             exit 1
           }
-      - uses: softprops/action-gh-release@c95fe1489396fe8a9eb87c0abf8aa5b2ef267fda # v2.2.1
+      - uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
         with:
           body_path: release-notes.md
           files: dist/*
@@ -307,7 +307,7 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Build, check, push (the push on a tag only)
@@ -387,14 +387,14 @@ jobs:
             echo "::error::COMMUNITY_EXT_PAT is not set on this repository, so this release cannot reach the DuckDB registry. Set it (gh secret set COMMUNITY_EXT_PAT -R gburd/improv) and re-run this job."
             exit 1
           fi
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: steps.registered.outputs.yes == 'true'
         with:
           persist-credentials: false
           path: improv
       - name: Check out the fork of community-extensions
         if: steps.registered.outputs.yes == 'true'
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: gburd/community-extensions
           token: ${{ secrets.COMMUNITY_EXT_PAT }}
@@ -440,7 +440,7 @@ jobs:
     needs: [release, pgxn]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Announce

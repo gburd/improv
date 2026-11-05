@@ -33,7 +33,7 @@ jobs:
           curl -sSfL -o /tmp/lc.zip https://github.com/Michael-F-Bryan/mdbook-linkcheck/releases/download/v0.7.7/mdbook-linkcheck.x86_64-unknown-linux-gnu.zip
           unzip -qo /tmp/lc.zip mdbook-linkcheck && chmod +x mdbook-linkcheck
           mdbook --version
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Build the guide
         run: |
           mdbook build docs
@@ -44,7 +44,7 @@ jobs:
           echo "SITE=$site" >> "$GITHUB_ENV"
       - name: Publish to Codeberg Pages
         if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
-        uses: actions/git-pages@v2
+        uses: actions/git-pages@2b24bbb7ff943d3c8fe1df91326adec66daea6dd # v2.2.0
         with:
           site: https://gregburd.codeberg.page/improv/
           token: ${{ github.token }}

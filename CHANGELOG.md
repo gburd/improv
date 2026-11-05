@@ -218,7 +218,9 @@ this project follows [Semantic Versioning](https://semver.org/).
   targets' lockfiles take the newest compatible versions; the Verus
   proofs check with Verus 0.2026.11.02.8bf68ee and vstd
   0.0.0-2026-11-01-0251 (were 0.2026.10.04.426d8b0 and
-  0.0.0-2026-10-04-0306), unchanged. The DuckDB
+  0.0.0-2026-10-04-0306), unchanged; CI's actions move to their newest
+  releases (checkout v7, upload-artifact v7, download-artifact v8, cache
+  v6, rust-cache 2.9.3: Node 24). The DuckDB
   extension stays on duckdb-rs 1.10506 (the DuckDB v1.5.6 C API floor):
   duckdb-rs 1.20000 reads past the end of v1.5.6's API struct
   (`crates/duckdb_improv/README.md`, "Pins").
