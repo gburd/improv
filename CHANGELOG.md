@@ -188,6 +188,11 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **Mentat 1.19.1** (was 1.18.0). Nothing in Improv changes: its
+  transactions use lookup refs, not tempids, and its queries aggregate
+  nothing, so 1.19's stricter tempids and typed aggregates don't reach
+  them. Saving and loading take the same time, and a file either version
+  wrote opens in the other (`docs/reviews/2026-11-05-mentat-1.19-upgrade.md`).
 - **`improv_store::StoreError::Unsupported` is gone.** Nothing returns it
   since both backends keep access policies (pg_improv 0.13 for a Postgres
   model); a `match` with an arm for it no longer compiles.

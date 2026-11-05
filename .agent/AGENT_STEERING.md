@@ -258,8 +258,8 @@ items in logical mode (status counts applies/rebuilds; `tests/scale.sh`),
 scoped trigger loads. FIXPOINT steps run host-side
 (`engine/src/hosteval.rs`, DD fallback): 0.43 s at 1.5k/100k, 6.6 s at
 10k/1M. **Open:** FILL rebuilds on a new item; commit mode still
-recomputes in full. Mentat is `mentatdb` 1.18.0 from
-crates.io (`6eb9023`).
+recomputes in full. Mentat is `mentatdb` 1.19.1 from
+crates.io (`docs/reviews/2026-11-05-mentat-1.19-upgrade.md`).
 
 ## Released: v0.7.0 (2026-09-24)
 

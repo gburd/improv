@@ -24,14 +24,14 @@ a hard requirement from the source design.
 
 - Dependency: `mentatdb` from crates.io, pinned exactly in
   `[workspace.dependencies]` — `mentat = { package = "mentatdb", version =
-  "=1.16.0" }` (the library is still `mentat`). Not a path dependency:
+  "=1.19.1" }` (the library is still `mentat`). Not a path dependency:
   `path = "../mentat"` made a fresh clone unbuildable. (Until 1.12 it was a
   git dependency pinned by `rev`; the registry needs no `allow-git` and its
   crates carry their own license fields.)
 - When Improv needs newer Mentat behavior: release it to crates.io from Mentat
   `master`, bump the version, commit the updated `Cargo.lock`, and run the A/B benchmark
   (`docs/reviews/bench/bench-mentat.sh`; last run:
-  `docs/reviews/2026-10-18-mentat-1.16-upgrade.md`). To develop Mentat locally,
+  `docs/reviews/2026-11-05-mentat-1.19-upgrade.md`). To develop Mentat locally,
   use a temporary `[patch]` / `cargo add --path` — never commit it.
 - Mentat is backed by SQLite, giving durable, transactional, cross-platform
   persistence for free.
