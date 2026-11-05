@@ -58,7 +58,7 @@ Each front end takes a model file or a Postgres model URL
 
 ### Improv in Postgres
 
-![pg_improv: a model over a sales table, an UPDATE flowing to the results, a LANGUAGE improv function, then the TUI editing the same model](docs/src/img/pg-demo.gif)
+![pg_improv: a model over a sales table, an UPDATE flowing to the results, improv.status, a LANGUAGE improv function, then the TUI editing the same model and the edit back in the table](docs/src/img/pg-demo.gif)
 
 ## Install
 

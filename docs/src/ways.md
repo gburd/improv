@@ -159,7 +159,15 @@ state is saved to the model.
 
 ## In Postgres (`pg_improv`)
 
-![Improv in Postgres](./img/pg-demo.gif)
+<video src="./img/pg-demo.mp4" controls muted loop playsinline width="100%"
+  poster="./img/pg-demo.png">
+  <img src="./img/pg-demo.gif" alt="pg_improv in psql: a model over a sales table, an UPDATE flowing to the result table, improv.status, a LANGUAGE improv function, then improv-tui editing the same model and the edit back in the table">
+</video>
+
+*pg_improv in psql: a model bound to a sales table, an `UPDATE` reaching
+the result table through the sync worker, `improv.status`, a `LANGUAGE
+improv` function, then the TUI editing the same model by URL, and the
+edit as a row of the table.*
 
 **Use it for:** data that already lives in Postgres. Bind your table's
 columns to categories and measures, define formulas, and read results from
