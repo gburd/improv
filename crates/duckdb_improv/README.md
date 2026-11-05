@@ -132,6 +132,20 @@ no longer does:
   *and* the v2.0.0-alpha46057 CLI and 2.0 dev Python package. CI's
   `test-duckdb` job and `.github/workflows/duckdb.yml` run both.
 
+**Why not duckdb-rs 1.20000 (DuckDB 2.0) yet.** It builds unchanged, and
+its binary passes every test under v1.5.6 and 2.0. But its
+`duckdb_ext_api_v1` struct has 548 entries: DuckDB 2.0 appended
+`duckdb_create_timestamp_tz_ns` and `duckdb_get_timestamp_tz_ns` to the
+v1 struct inside the v1.5.6 band (`DUCKDB_API_VERSION_AT_LEAST(1, 5, 6)`)
+without raising the v1 API version, which is still v1.5.6. duckdb-rs's
+`duckdb_rs_extension_api_init` reads all 548 pointers from the struct the
+host hands it, and v1.5.6 hands over its 546-entry struct, so loading
+into v1.5.6 reads 16 bytes past the end of the host's struct. That is
+undefined behaviour even though neither function is ever called, and
+it breaks the floor rule below. Revisit when the floor moves past
+v1.5.6, or when duckdb-rs gates those two entries by the version the
+host reports.
+
 Consequences: a DuckDB patch release does **not** need an improv release.
 What can still break it is DuckDB dropping or renumbering the v1 C API
 (there is a `duckdb_extension_v2.h`). If 2.0 final does that, the smoke test

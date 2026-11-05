@@ -214,6 +214,11 @@ this project follows [Semantic Versioning](https://semver.org/).
   source, or from PGXN, needs `cargo install cargo-pgrx --version 0.19.3
   --locked`. Postgres 15 to 18 stay supported, and the SQL it installs is
   unchanged. Its other dependencies are at their newest.
+- **Internal dependency refreshes:** the DuckDB extension's and the fuzz
+  targets' lockfiles take the newest compatible versions. The DuckDB
+  extension stays on duckdb-rs 1.10506 (the DuckDB v1.5.6 C API floor):
+  duckdb-rs 1.20000 reads past the end of v1.5.6's API struct
+  (`crates/duckdb_improv/README.md`, "Pins").
 - **`improv_store::StoreError::Unsupported` is gone.** Nothing returns it
   since both backends keep access policies (pg_improv 0.13 for a Postgres
   model); a `match` with an arm for it no longer compiles.
