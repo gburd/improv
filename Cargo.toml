@@ -99,4 +99,4 @@ clap_complete = "4.6.11"
 # validator. Pinned exactly: a policy that validates must keep validating,
 # and decide the same, until a deliberate bump. No extension types
 # (decimal, ipaddr, datetime): the schema uses none. Apache-2.0.
-cedar-policy = { version = "=4.14.0", default-features = false }
+cedar-policy = { version = "=4.14.1", default-features = false }
