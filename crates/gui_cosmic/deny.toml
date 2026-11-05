@@ -22,6 +22,10 @@ ignore = [
     "RUSTSEC-2026-0370", # zvariant (zbus 5, as in the root)
     "RUSTSEC-2026-0371", # zbus_names
     "RUSTSEC-2026-0372", # zvariant_derive
+    # pin-utils unmaintained: via iced_futures' wasmtimer (the wasm timer;
+    # 0.4.3, its newest release, still uses it). Not built for a desktop
+    # target. Revisit with each libcosmic bump.
+    "RUSTSEC-2026-0441", # pin-utils
 ]
 
 [licenses]
