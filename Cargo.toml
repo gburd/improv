@@ -66,8 +66,8 @@ timely = "=0.13.0"
 # procedure + benchmark: AGENTS.md "CI / storage-backend pin".
 mentat = { package = "mentatdb", version = "=1.19.1" }
 # TUI (Phase 2).
-ratatui = "0.29"
-crossterm = "0.28"
+ratatui = "0.30"
+crossterm = "0.29"
 # Server (Phase 3).
 axum = "0.7"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }

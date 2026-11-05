@@ -194,7 +194,8 @@ this project follows [Semantic Versioning](https://semver.org/).
   them. Saving and loading take the same time, and a file either version
   wrote opens in the other (`docs/reviews/2026-11-05-mentat-1.19-upgrade.md`).
 - **Dependencies:** cedar-policy 4.14.1 (was 4.14.0); hegeltest 0.52 (was
-  0.50, tests only); smallvec 1.16 (was 1.13).
+  0.50, tests only); smallvec 1.16 (was 1.13); the TUI's ratatui 0.30 and crossterm 0.29
+  (were 0.29 and 0.28).
 - **`improv_store::StoreError::Unsupported` is gone.** Nothing returns it
   since both backends keep access policies (pg_improv 0.13 for a Postgres
   model); a `match` with an arm for it no longer compiles.

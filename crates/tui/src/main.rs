@@ -118,10 +118,14 @@ fn event_loop<B: Backend>(
     app: &mut App,
     path: &str,
     events: impl IntoIterator<Item = io::Result<Event>>,
-) -> io::Result<()> {
+) -> io::Result<()>
+where
+    B::Error: Send + Sync + 'static,
+{
     let mut events = events.into_iter();
     while !app.should_quit {
-        term.draw(|f| ui::render(f, app))?;
+        term.draw(|f| ui::render(f, app))
+            .map_err(io::Error::other)?;
         let Some(ev) = events.next() else { break };
         handle_event(app, ev?, path);
     }
