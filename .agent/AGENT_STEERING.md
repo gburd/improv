@@ -37,11 +37,24 @@ stages 1-4 in 0.13).
   authority. Hidden is absent. Versions are opaque. (`improv_client`'s
   model service; the note's contract section.)
 
-## Active priority — the road to 1.0.0 (status 2026-10-29, v0.12.2)
+## Active priority — the road to 1.0.0 (status 2026-11-06, v0.13.0)
 
 The 1.0.0 plan is `docs/reviews/2026-10-21-road-to-1.0.md`; its "1.0.0 exit
 criteria" are the bar. Mark tasks done there as they land.
 
+- **Released 2026-11-06:** tag `v0.13.0` = `6aa70f7` (re-pointed from
+  `b5f3526` before anything published: the first run's attest step looked
+  for pg_improv's SBOM under its pre-pgrx-0.19 name; fixed in 84974bf, and
+  a dispatch now runs the attest step unsigned, 6aa70f7). Cedar access
+  policies (server and pg_improv 0.13.0), the web GUI, improv-cosmic
+  (preview), NeXTSTEP fidelity rounds 1-2, every dependency at its newest
+  release (Mentat 1.19.1, DD 0.26/timely 0.32, pgrx 0.19.3, DuckDB 2.0).
+  43 assets (cosign `verify-blob` OK), PGXN 0.13.0, ghcr `improv:0.13.0`;
+  registry PR duckdb/community-extensions#3551 (opened by hand from the
+  fork branch `improv-v0.12.0`: `COMMUNITY_EXT_PAT` unset; #3416 merged).
+  Not in it: Cedar stage 4 (TLS), moved to 0.14. Known regression: root
+  edits on ~2,000-measure graphs up to 1.34x (timely 0.32 progress
+  tracking; the scale gate fails `measures.chain.root_edit`).
 - **Released 2026-10-29:** tag `v0.12.2` = `b7fc53b`: an idle sync worker
   keeps its model listing; pg_improv's update from 0.12.1 changes only its
   version. 43 assets (cosign OK, every Linux file at glibc 2.28), PGXN
