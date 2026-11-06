@@ -1,7 +1,7 @@
 [package]
 name = "improv_gui_cosmic"
 description = "Improv's COSMIC desktop GUI (libcosmic on iced)"
-version = "0.12.2"
+version = "0.13.0"
 edition = "2021"
 rust-version = "1.97"
 license = "Apache-2.0 OR MIT"

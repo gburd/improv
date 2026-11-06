@@ -2931,7 +2931,7 @@ checksum = "edcd27d72f2f071c64249075f42e205ff93c9a4c5f6c6da53e79ed9f9832c285"
 
 [[package]]
 name = "improv_client"
-version = "0.12.2"
+version = "0.13.0"
 dependencies = [
  "chrono",
  "improv_core_model",
@@ -2941,7 +2941,7 @@ dependencies = [
 
 [[package]]
 name = "improv_core_model"
-version = "0.12.2"
+version = "0.13.0"
 dependencies = [
  "chrono",
  "serde",
@@ -2953,7 +2953,7 @@ dependencies = [
 
 [[package]]
 name = "improv_engine"
-version = "0.12.2"
+version = "0.13.0"
 dependencies = [
  "chrono",
  "differential-dataflow",
@@ -2971,7 +2971,7 @@ dependencies = [
 
 [[package]]
 name = "improv_extfn"
-version = "0.12.2"
+version = "0.13.0"
 dependencies = [
  "chrono",
  "improv_core_model",
@@ -2985,7 +2985,7 @@ dependencies = [
 
 [[package]]
 name = "improv_gui_cosmic"
-version = "0.12.2"
+version = "0.13.0"
 dependencies = [
  "clap",
  "futures",
@@ -3002,7 +3002,7 @@ dependencies = [
 
 [[package]]
 name = "improv_nl_formula"
-version = "0.12.2"
+version = "0.13.0"
 dependencies = [
  "improv_core_model",
  "thiserror 2.0.21",
@@ -3010,7 +3010,7 @@ dependencies = [
 
 [[package]]
 name = "improv_storage_mentat"
-version = "0.12.2"
+version = "0.13.0"
 dependencies = [
  "chrono",
  "improv_core_model",
@@ -3022,7 +3022,7 @@ dependencies = [
 
 [[package]]
 name = "improv_storage_pg"
-version = "0.12.2"
+version = "0.13.0"
 dependencies = [
  "chrono",
  "improv_core_model",
@@ -3034,7 +3034,7 @@ dependencies = [
 
 [[package]]
 name = "improv_store"
-version = "0.12.2"
+version = "0.13.0"
 dependencies = [
  "improv_core_model",
  "improv_storage_mentat",
@@ -3044,7 +3044,7 @@ dependencies = [
 
 [[package]]
 name = "improv_verified"
-version = "0.12.2"
+version = "0.13.0"
 dependencies = [
  "vstd",
 ]

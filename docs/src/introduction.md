@@ -37,7 +37,7 @@ which to reach for and when.
 
 ## Status
 
-Version 0.12.2 builds and passes its tests on Linux, macOS and Windows;
+Version 0.13.0 builds and passes its tests on Linux, macOS and Windows;
 the Postgres extension supports Postgres 15 to 18. The next release (0.13,
 on `main`) adds access policies, the web GUI, the COSMIC GUI and the
 desktop GUI on FreeBSD and illumos. External functions in Python, R,

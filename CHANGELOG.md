@@ -6,6 +6,28 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-11-06
+
+The release that adds access control and new front ends. A model can
+carry access policies, written in Cedar, that say per user, role and
+group which measures, items and cells each may see and edit: the HTTP
+server enforces them on every route, and pg_improv 0.13.0 enforces them
+inside Postgres, with row-level security on the result tables (a 1M-row
+read by a restricted role costs about 2.6x the owner's, down from 16x in
+the first build) and an `improv_reader` role for restricted users. The
+GUI runs in a browser (`crates/gui_web`, served by improv-server, with
+live changes over SSE), and `improv-cosmic` is a first COSMIC desktop GUI
+(a preview). The NeXTSTEP GUI gains Lotus Improv 1.0's menus, color
+graphs, the Inspector and Format panels, printing, context help and
+structured selection. Every dependency moves to its newest release,
+including Mentat 1.19.1, differential-dataflow 0.26, pgrx 0.19.3 and a
+bundled DuckDB 2.0. Two data-loss bugs are fixed: a long-lived Mentat
+handle could reuse another program's ids, and `ALTER EXTENSION pg_improv
+UPDATE` could deadlock with the sync worker. Known regression: an edit at
+the root of a very wide or deep model (about 2,000 measures) is up to
+1.34x slower than 0.12.2, in timely 0.32's progress tracking; most other
+paths are faster.
+
 ### Added
 
 - **Docs: console movies, slower and narrated.** The TUI and pg_improv
@@ -3085,7 +3107,8 @@ Improv becomes buildable by anyone who clones it.
 - Project infrastructure: workspace, `rustfmt.toml`, `clippy.toml`, `deny.toml`,
   `.typos.toml`, CI, dual license (Apache-2.0 OR MIT), contributor guide.
 
-[Unreleased]: https://codeberg.org/gregburd/improv/compare/v0.12.2...main
+[Unreleased]: https://codeberg.org/gregburd/improv/compare/v0.13.0...main
+[0.13.0]: https://codeberg.org/gregburd/improv/compare/v0.12.2...v0.13.0
 [0.12.2]: https://codeberg.org/gregburd/improv/compare/v0.12.1...v0.12.2
 [0.12.1]: https://codeberg.org/gregburd/improv/compare/v0.12.0...v0.12.1
 [0.12.0]: https://codeberg.org/gregburd/improv/compare/v0.11.0...v0.12.0
