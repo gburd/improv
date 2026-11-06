@@ -193,6 +193,13 @@ this project follows [Semantic Versioning](https://semver.org/).
   nothing, so 1.19's stricter tempids and typed aggregates don't reach
   them. Saving and loading take the same time, and a file either version
   wrote opens in the other (`docs/reviews/2026-11-05-mentat-1.19-upgrade.md`).
+- **DuckDB 2.0 in `improv_storage_sql`** (bundled, was 1.5.6; the
+  `duckdb` crate 1.20000.1). It reads files DuckDB 1.x wrote, and 1.5.6
+  still reads them after 2.0 writes to them, but a file 2.0 creates is
+  2.0-only (storage version 69): DuckDB 1.5 refuses it. An untyped `NULL`
+  column in a DuckDB query result is a null cell (the new crate panicked
+  on it, duckdb-rs#933). The DuckDB extension is separate and still loads
+  into DuckDB 1.5.6 and 2.0.
 - **Dependencies:** cedar-policy 4.14.1 (was 4.14.0); hegeltest 0.52 (was
   0.50, tests only); smallvec 1.16 (was 1.13); the TUI's ratatui 0.30 and crossterm 0.29
   (were 0.29 and 0.28); improv-server's axum 0.8 (was 0.7; the routes and

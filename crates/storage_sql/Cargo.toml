@@ -16,7 +16,9 @@ serde.workspace = true
 postgres = "0.19"
 
 [dependencies.duckdb]
-version = "1.4.0"
+# Bundled DuckDB 2.0. It reads files 1.x wrote, but a file it creates is
+# 2.0-only (storage version 69; 1.5 reads up to 68).
+version = "1.20000.1"
 features = ["bundled"]
 
 [dependencies.rusqlite]

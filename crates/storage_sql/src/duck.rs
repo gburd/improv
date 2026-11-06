@@ -73,6 +73,12 @@ fn duck_query_inner(conn: &duckdb::Connection, sql: &str) -> Result<Table> {
         let ncols = columns.as_ref().map(|c| c.len()).unwrap_or(0);
         let mut cells = Vec::with_capacity(ncols);
         for i in 0..ncols {
+            // An untyped NULL column (`SELECT NULL`) holds only nulls, and
+            // duckdb 1.20000.1's `get_ref` panics on it (duckdb-rs#933).
+            if row.as_ref().column_type(i) == duckdb::arrow::datatypes::DataType::Null {
+                cells.push(Cell::Null);
+                continue;
+            }
             let vr = row
                 .get_ref(i)
                 .map_err(|e| SqlError::Import(format!("duckdb column {i} failed: {e}")))?;
@@ -182,6 +188,15 @@ mod tests {
         );
         // Dates are stringified defensively, not an error.
         assert!(matches!(&r[15], Cell::Text(s) if !s.is_empty()));
+    }
+
+    /// duckdb-rs#933: an untyped NULL panicked inside `get_ref`.
+    #[test]
+    fn untyped_null_columns_are_null_cells() {
+        let t = duck_query(&mem(), "SELECT NULL AS n, 1 AS one").unwrap();
+        assert_eq!(t.rows, [vec![Cell::Null, Cell::Int(1)]]);
+        let t = duck_query(&mem(), "SELECT [NULL] AS l, {'a': NULL} AS s").unwrap();
+        assert_eq!(t.rows[0].len(), 2);
     }
 
     #[test]
