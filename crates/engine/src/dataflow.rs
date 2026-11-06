@@ -23,10 +23,10 @@ use crate::plan::{PlanNode, PlanNodeKind};
 use crate::reduce::{self, order, two_level, Rows};
 use crate::{encode_coord, CellValue, CoordKey};
 use differential_dataflow::input::InputSession;
+use differential_dataflow::operators::arrange::arrangement::arrange_core;
 use differential_dataflow::operators::arrange::{Arranged, TraceAgent};
-use differential_dataflow::trace::implementations::{ValBuilder, ValSpine};
-use differential_dataflow::AsCollection;
-use differential_dataflow::VecCollection;
+use differential_dataflow::trace::implementations::{ValBatcher, ValBuilder, ValSpine};
+use differential_dataflow::{AsCollection, ExchangeData, Hashable, VecCollection};
 use improv_core_model::{
     BinaryOp, CategoryId, Formula, FuncId, ItemId, MeasureId, MeasureKind, Model, UnaryOp,
 };
@@ -38,6 +38,7 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use timely::communication::allocator::{Allocator, ProcessBuilder, Thread};
+use timely::dataflow::channels::pact::Exchange;
 use timely::dataflow::operators::vec::ToStream;
 use timely::dataflow::Scope;
 use timely::worker::Worker;
@@ -679,7 +680,7 @@ fn build_aggregate<'s>(
         let order = agg_order(a.order);
         let consts: Vec<Option<CellValue>> = a.params.iter().map(literal_value).collect();
         let func = a.func;
-        return Ok(reduce_keyed(
+        return Ok(reduce_arranged(
             keyed(arr, Some(first), &c, a.group_by),
             move |_k, input, output| {
                 let mut rows: Vec<(AggRow, isize)> = input
@@ -811,14 +812,13 @@ fn build_aggregate<'s>(
     if a.two_level() {
         // Each block of a group reduces to a part, the parts to the result:
         // an edit re-reduces its block and the group's parts.
-        let parts = keyed
-            .map(|(g, row)| ((g, two_level::block(row.0 .1)), row))
-            .reduce(move |_k, input, output| {
-                let (rs, _, _) = to_rows(input);
-                if !rs.is_empty() {
-                    output.push((two_level::part(func, &rs), 1isize));
-                }
-            });
+        let blocks = keyed.map(|(g, row)| ((g, two_level::block(row.0 .1)), row));
+        let parts = reduce_arranged(by_block(blocks), move |_k, input, output| {
+            let (rs, _, _) = to_rows(input);
+            if !rs.is_empty() {
+                output.push((two_level::part(func, &rs), 1isize));
+            }
+        });
         return Ok(parts
             .map(|((g, b), p)| (g, (b, p)))
             .reduce(move |_k, input, output| {
@@ -936,14 +936,18 @@ fn keyed<'s>(
     }
 }
 
-/// `logic` over each group of `k` (its cells, in order), one value per
-/// group: [`VecCollection::reduce`] on a shared arrangement.
-fn reduce_keyed<'s>(
-    k: Keyed<'s>,
-    logic: impl FnMut(&CoordKey, &[(&(CoordKey, CellValue), isize)], &mut Vec<(CellValue, isize)>)
-        + 'static,
-) -> Coll<'s> {
-    k.reduce_abelian::<_, ValBuilder<_, _, _, _>, ValSpine<CoordKey, CellValue, u64, isize>, _, _>(
+/// `logic` over each key's values of `a`, in order: what
+/// [`VecCollection::reduce`] does after arranging its input itself.
+fn reduce_arranged<'s, K, V, V2>(
+    a: Arranged<'s, TraceAgent<ValSpine<K, V, u64, isize>>>,
+    logic: impl FnMut(&K, &[(&V, isize)], &mut Vec<(V2, isize)>) + 'static,
+) -> VecCollection<'s, u64, (K, V2), isize>
+where
+    K: ExchangeData + Hashable,
+    V: ExchangeData,
+    V2: differential_dataflow::Data,
+{
+    a.reduce_abelian::<_, ValBuilder<_, _, _, _>, ValSpine<K, V2, u64, isize>, _, _>(
         "Reduce",
         logic,
         |vec, key, upds| {
@@ -952,6 +956,27 @@ fn reduce_keyed<'s>(
         },
     )
     .as_collection(|k, v| (k.clone(), v.clone()))
+}
+
+/// A two-level reduction's rows by (group, block), a group's consecutive
+/// blocks on consecutive workers. Hashing each block instead (DD hashes
+/// with foldhash) put up to 20 of a 100k-item category's 99 blocks on one
+/// of 8 workers, 13 at most this way.
+#[allow(clippy::type_complexity)]
+fn by_block<'s>(
+    rows: VecCollection<'s, u64, ((CoordKey, u32), AggRow), isize>,
+) -> Arranged<'s, TraceAgent<ValSpine<(CoordKey, u32), AggRow, u64, isize>>> {
+    let route = Exchange::new(
+        |(((g, b), _), _, _): &(((CoordKey, u32), AggRow), u64, isize)| {
+            g.hashed().wrapping_add(u64::from(*b))
+        },
+    );
+    arrange_core::<_, _, ValBatcher<_, _, _, _>, _>(
+        rows.inner,
+        route,
+        "Arrange: Reduce",
+        ValBatcher::new,
+    )
 }
 
 /// A joined pair of cells, at their union coordinate.
