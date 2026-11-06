@@ -65,7 +65,7 @@ for f in "$dist"/*; do
 		pg=${name#"pg_improv-$ver-pg"}
 		pg=${pg%%-*}
 		cdx crates/pg_improv $linux --no-default-features --features "pg$pg"
-		take "$root/crates/pg_improv/pg_improv_cdylib-lib_$linux.cdx.json" "${name%.tar.gz}.cdx.json"
+		take "$root/crates/pg_improv/pg_improv_cdylib_$linux.cdx.json" "${name%.tar.gz}.cdx.json"
 		;;
 	"improv-$tag-"*.tar.gz | "improv-$tag-"*.zip)
 		target=${name#"improv-$tag-"}
