@@ -58,6 +58,8 @@
           typos
           mdbook
           mdbook-linkcheck2
+          # docs/book.toml's [output.linkcheck] runs `mdbook-linkcheck`.
+          (writeShellScriptBin "mdbook-linkcheck" ''exec ${mdbook-linkcheck2}/bin/mdbook-linkcheck2 "$@"'')
           mdbook-mermaid
           git
           sqlite # for the SQL-connectivity crate + manual testing
