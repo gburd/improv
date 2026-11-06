@@ -239,6 +239,32 @@ jobs:
           path: pkg/*
           if-no-files-found: error
 
+  # A dry run checks the SBOMs and SHA256SUMS too, unsigned (keyless
+  # signing needs a tag's OIDC identity): a release once failed here after
+  # every build had passed, because the dry run skipped this step.
+  attest-dry-run:
+    name: SBOMs and SHA256SUMS (dry run, unsigned)
+    if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+    needs: [qualify, extension, build-duckdb-ext, packages]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: dist-*
+          path: dist
+          merge-multiple: true
+      - uses: dtolnay/rust-toolchain@stable
+      - name: SBOMs, SHA256SUMS
+        env:
+          ATTEST_SIGN: none
+        run: |
+          cargo install cargo-cyclonedx --version =0.5.9 --locked
+          ver=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          ci/release-attest.sh "v$ver" dist
+
   release:
     name: GitHub Release
     if: startsWith(github.ref, 'refs/tags/')
