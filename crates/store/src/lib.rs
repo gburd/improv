@@ -642,7 +642,11 @@ mod tests {
             "postgres://{}:{}@{}/{}",
             get("user"),
             get("password"),
-            get("host"),
+            // The port too: a test server off 5432 must not be missed.
+            match get("port") {
+                "" => get("host").to_owned(),
+                port => format!("{}:{port}", get("host")),
+            },
             get("dbname")
         ))
     }

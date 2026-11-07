@@ -18620,7 +18620,10 @@ mod tests {
                 .collect();
             let get = |k| kv.get(k).copied().unwrap_or_default();
             let (u, pw, h, d) = (get("user"), get("password"), get("host"), get("dbname"));
-            format!("postgres://{u}:{pw}@{h}/{d}")
+            match get("port") {
+                "" => format!("postgres://{u}:{pw}@{h}/{d}"),
+                port => format!("postgres://{u}:{pw}@{h}:{port}/{d}"),
+            }
         };
         let url = format!("{base}?model=gui_{}", std::process::id());
         let mut store = improv_store::Store::open(&url).unwrap();
@@ -18665,7 +18668,11 @@ mod tests {
             "postgres://{}:{}@{}/{}?model={model}",
             get("user"),
             get("password"),
-            get("host"),
+            // The port too: a test server off 5432 must not be missed.
+            match get("port") {
+                "" => get("host").to_owned(),
+                port => format!("{}:{port}", get("host")),
+            },
             get("dbname")
         );
         // An empty model with Time × Product, saved through the store so the
