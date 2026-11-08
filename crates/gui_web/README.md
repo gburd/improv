@@ -5,9 +5,6 @@ canvas, over `improv-server`'s `/v1` API (`improv_client::wire`). The
 model, the engine and the store stay in the server; this crate draws and
 sends edits. User guide: [`docs/src/web-gui.md`](../../docs/src/web-gui.md).
 
-- `src/layout.rs`: a worksheet's pivot, the cell cache (value, blank,
-  not loaded) and the grid's keyboard cursor. Pure; built and tested on
-  every target.
 - `src/a11y.rs`: egui's AccessKit tree as ARIA elements, and each
   frame's changes to them. Pure; tested on every target.
 - `src/bridge.rs`: keeps hidden DOM in the canvas in step with that tree,
@@ -20,8 +17,10 @@ sends edits. User guide: [`docs/src/web-gui.md`](../../docs/src/web-gui.md).
 - `crates/gui`'s `theme`, `nxwin`, `menu` and `formula_highlight` compile
   in unchanged through `#[path]`.
 
-Off wasm32 the crate is `layout` alone, so `cargo build --workspace`
-builds it everywhere.
+A worksheet's pivot, the cell cache (value, blank, not loaded) and the
+grid's keyboard cursor are `improv_client::layout`, shared with the
+desktop GUI and the TUI and tested natively. Off wasm32 the crate is
+`a11y` alone, so `cargo build --workspace` builds it everywhere.
 
 ```sh
 ./build.sh [--release] [DIR]      # DIR defaults to target/gui_web

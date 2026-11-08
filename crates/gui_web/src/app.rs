@@ -14,9 +14,9 @@ use improv_client::wire::{
 };
 use improv_core_model::{Locale, Model, NumberFormat};
 
-use crate::layout::{Axis, Cache, Sheet};
 use crate::menu::{self, Command};
 use crate::theme::{BLACK, DARK_GRAY, LIGHT_GRAY, WHITE};
+use improv_client::layout::{Axis, Cache, Sheet};
 
 const ROW_H: f32 = 20.0;
 const COL_W: f32 = 90.0;
@@ -1115,16 +1115,18 @@ impl<S: ModelService> WebApp<S> {
                                 .ctx()
                                 .data_mut(|d| d.get_temp(key))
                                 .unwrap_or_else(|| seed.clone());
-                            let resp =
-                                ui.put(
+                            let resp = ui
+                                .put(
                                     r,
                                     egui::TextEdit::singleline(&mut buf)
                                         .id(id)
                                         .align(egui::Align2::RIGHT_CENTER),
                                 )
-                                .accessible_name(
-                                    crate::layout::cell_name(&row_name, &col_names[ci], "editing"),
-                                );
+                                .accessible_name(improv_client::layout::cell_name(
+                                    &row_name,
+                                    &col_names[ci],
+                                    "editing",
+                                ));
                             if !resp.has_focus() {
                                 resp.request_focus();
                             }
@@ -1182,7 +1184,8 @@ impl<S: ModelService> WebApp<S> {
                             false => Sense::CLICK,
                         };
                         let resp = ui.interact(r, egui::Id::unique(("cell", w.uid, &at)), sense);
-                        let name = crate::layout::cell_name(&row_name, &col_names[ci], &text);
+                        let name =
+                            improv_client::layout::cell_name(&row_name, &col_names[ci], &text);
                         resp.widget_info(|| {
                             egui::WidgetInfo::labeled(egui::Role::GridCell, true, &name)
                         });
@@ -1271,7 +1274,7 @@ impl<S: ModelService> WebApp<S> {
         cell_id: impl Fn(usize, usize) -> egui::Id,
         out: &mut GridOut,
     ) {
-        use crate::layout::Step;
+        use improv_client::layout::Step;
         // The cell keeps the arrows (egui would move the focus by them).
         ui.memory_mut(|m| {
             m.set_focus_lock_filter(
@@ -1297,7 +1300,7 @@ impl<S: ModelService> WebApp<S> {
                 .map(|(_, s)| (*s, i.modifiers.command))
         });
         if let Some(to) = pressed
-            .and_then(|(k, ctrl)| crate::layout::step(at, k, ctrl, size.0, size.1))
+            .and_then(|(k, ctrl)| improv_client::layout::step(at, k, ctrl, size.0, size.1))
             .filter(|to| *to != at)
         {
             *out.cursor = Some(to);

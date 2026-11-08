@@ -431,6 +431,26 @@ pub struct ChangedCell {
     pub value: Option<WireValue>,
 }
 
+/// The complete Server-Sent Events at the front of `buf` (each ends with a
+/// blank line), parsed as [`ChangeEvent`]s; a partial event stays for the
+/// next chunk. A keep-alive comment or an event that is not a change is
+/// skipped.
+pub fn take_events(buf: &mut String) -> Vec<ChangeEvent> {
+    let mut out = Vec::new();
+    while let Some(end) = buf.find("\n\n") {
+        let frame: String = buf.drain(..end + 2).collect();
+        let data: String = frame
+            .lines()
+            .filter_map(|l| l.strip_prefix("data:"))
+            .map(str::trim_start)
+            .collect();
+        if let Ok(ev) = serde_json::from_str::<ChangeEvent>(&data) {
+            out.push(ev);
+        }
+    }
+    out
+}
+
 /// What a client asks the model service for. [`Request::http`] is how the
 /// remote service sends it; the server parses each route back into one.
 #[derive(Debug, Clone, PartialEq)]
@@ -792,6 +812,22 @@ mod tests {
         q.authenticate("secret".into());
         assert!(q.live());
         assert_eq!(q.poll(), vec![Event::LoggedOut("token refused".into())]);
+    }
+
+    /// Events split across chunks come out whole, in order; comments
+    /// (keep-alives) and other frames are skipped.
+    #[test]
+    fn change_events_are_taken_from_a_stream() {
+        let mut buf =
+            String::from(": keep-alive\n\nid: 3\ndata: {\"version\":\"3\"}\n\nid: 4\ndata: {\"ver");
+        let evs = take_events(&mut buf);
+        assert_eq!(evs.len(), 1);
+        assert_eq!(evs[0].version, "3");
+        assert_eq!(buf, "id: 4\ndata: {\"ver");
+        buf.push_str("sion\":\"4\",\"reload\":true}\n\ndata: nonsense\n\n");
+        let evs = take_events(&mut buf);
+        assert_eq!((evs.len(), evs[0].reload), (1, true));
+        assert!(buf.is_empty());
     }
 
     #[test]

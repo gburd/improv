@@ -1,10 +1,13 @@
-//! A worksheet's pivot, without egui: which categories are on rows,
-//! columns and pages, which page item is picked, and the cells that
-//! layout puts on screen. Pure, so it is tested natively.
+//! A worksheet's pivot over a [`Structure`], without a GUI toolkit: which
+//! categories are on rows, columns and pages, which page item is picked,
+//! the window of cells that puts on screen, and the cells a client has read
+//! ([`Cache`]: a value, blank, or not loaded yet). Shared by every client of
+//! a [`ModelService`](crate::wire::ModelService): the web GUI, and the
+//! desktop GUI and the TUI on a server model.
 
 use std::collections::{BTreeMap, HashMap};
 
-use improv_client::wire::{At, Structure, WindowReq, WireValue};
+use crate::wire::{At, Structure, WindowReq, WireValue};
 
 /// Where a category sits in a worksheet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -213,8 +216,8 @@ impl Cache {
     }
 
     /// What is known of a cell.
-    pub fn get(&self, measure: u32, at: &At) -> improv_client::wire::Cell<'_> {
-        use improv_client::wire::Cell;
+    pub fn get(&self, measure: u32, at: &At) -> crate::wire::Cell<'_> {
+        use crate::wire::Cell;
         if let Some(v) = self.cells.get(&measure).and_then(|m| m.get(at)) {
             return Cell::Value(v);
         }
@@ -301,7 +304,7 @@ fn covers(w: &BTreeMap<u32, Vec<u32>>, at: &At) -> bool {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
-    use improv_client::wire::{CategoryOut, Cell, ItemOut, MeasureOut};
+    use crate::wire::{CategoryOut, Cell, ItemOut, MeasureOut};
     use improv_core_model::ValueType;
 
     fn structure() -> Structure {

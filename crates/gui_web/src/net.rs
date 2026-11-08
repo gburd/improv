@@ -7,7 +7,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use improv_client::wire::{ChangeEvent, Event, Failure, ModelService, Request};
+use improv_client::wire::{take_events, Event, Failure, ModelService, Request};
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
 
@@ -256,24 +256,6 @@ async fn read_stream(
     }
     let _ = reader.cancel();
     Ok(())
-}
-
-/// The complete events at the front of `buf` (each ends with a blank
-/// line), parsed; what is left stays for the next chunk.
-pub fn take_events(buf: &mut String) -> Vec<ChangeEvent> {
-    let mut out = Vec::new();
-    while let Some(end) = buf.find("\n\n") {
-        let frame: String = buf.drain(..end + 2).collect();
-        let data: String = frame
-            .lines()
-            .filter_map(|l| l.strip_prefix("data:"))
-            .map(str::trim_start)
-            .collect();
-        if let Ok(ev) = serde_json::from_str::<ChangeEvent>(&data) {
-            out.push(ev);
-        }
-    }
-    out
 }
 
 async fn sleep(ms: u32) {
