@@ -22,6 +22,10 @@ mod help;
 mod menu;
 mod nxwin;
 mod print;
+// A model served by improv-server (https://…): the web GUI's worksheet
+// app, over the remote model service.
+mod served;
+mod served_edit;
 mod theme;
 
 /// Tests run egui frames by hand and never paint them; egui 0.37 asserts
@@ -54,6 +58,9 @@ use clap::Parser;
 fn main() -> eframe::Result<()> {
     // No model is "": an in-memory scratch model.
     let db = args::Cli::parse().model.unwrap_or_default();
+    if improv_client::remote::is_server(&db) {
+        return served_main(&db);
+    }
 
     // The store opens here (a bad path fails before any window); its model
     // loads in the background, behind a "Loading…" desk.
@@ -79,6 +86,44 @@ fn main() -> eframe::Result<()> {
             // Apply the NeXTSTEP look-and-feel once at startup.
             theme::apply(&cc.egui_ctx);
             Ok(Box::new(app))
+        }),
+    )
+}
+
+/// A model improv-server serves: the worksheet app over the remote model
+/// service. The token is `IMPROV_API_TOKEN`, else the window asks for it;
+/// it is held in memory only.
+// Coverage exclusion: the native window; `served` and `remote` are tested.
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn served_main(url: &str) -> eframe::Result<()> {
+    let target = match improv_client::remote::Target::parse(url) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("improv-gui: {e}");
+            std::process::exit(1);
+        }
+    };
+    let title = format!("Improv - {}", target.base());
+    let token = std::env::var("IMPROV_API_TOKEN").ok();
+    let native_options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_title(&title)
+            .with_inner_size(app::INITIAL_WINDOW)
+            .with_min_inner_size(app::MIN_WINDOW),
+        ..Default::default()
+    };
+    eframe::run_native(
+        "Improv",
+        native_options,
+        Box::new(move |cc| {
+            let ctx = cc.egui_ctx.clone();
+            let svc = improv_client::remote::Remote::new(target, move || ctx.request_repaint())
+                .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { e.into() })?;
+            Ok(Box::new(served::Served(served::WebApp::new(
+                &cc.egui_ctx,
+                svc,
+                token,
+            ))))
         }),
     )
 }

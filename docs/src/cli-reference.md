@@ -429,7 +429,7 @@ Usage: improv-gui [model]
 
 | Argument | Description |
 | --- | --- |
-| `<model>` | The model: a store file, or postgres://USER@HOST/DB?model=NAME. Without it the model is in memory only |
+| `<model>` | The model: a store file, postgres://USER@HOST/DB?model=NAME, or an improv-server's https://HOST:PORT (http:// only on this machine). Without it the model is in memory only |
 
 ## `improv-cosmic`
 
@@ -453,7 +453,7 @@ Usage: improv-tui <model>
 
 | Argument | Description |
 | --- | --- |
-| `<model>` | The model: a store file (a new one opens empty), or postgres://USER@HOST/DB?model=NAME |
+| `<model>` | The model: a store file (a new one opens empty), postgres://USER@HOST/DB?model=NAME, or an improv-server's https://HOST:PORT (http:// only on this machine) |
 
 ## `improv-server`
 

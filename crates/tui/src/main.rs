@@ -1,6 +1,6 @@
 //! `improv-tui`: a VisiCalc-style pivot grid over an Improv model.
 //!
-//! Usage: `improv-tui <model.db | postgres://…?model=NAME>`
+//! Usage: `improv-tui <model.db | postgres://…?model=NAME | https://server>`
 //!
 //! The binary is a thin shell: [`run`] owns the real terminal (raw mode, alt
 //! screen, panic hook) and feeds `crossterm` events into [`event_loop`], which
@@ -20,6 +20,8 @@ mod diagnose;
 use improv_client::dsl;
 mod edit;
 mod fnhelp;
+// A model improv-server serves (https://…), over the remote model service.
+mod served;
 mod ui;
 
 use app::App;
@@ -44,6 +46,13 @@ use std::io;
 #[cfg_attr(coverage_nightly, coverage(off))]
 fn main() {
     let path = args::Cli::parse().model;
+    if improv_client::remote::is_server(&path) {
+        if let Err(e) = run_served(&path) {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }
+        return;
+    }
     // Load the model BEFORE touching the terminal, so errors print cleanly.
     if let Err(e) = load(&path).and_then(|app| run(app, &path)) {
         eprintln!("error: {e}");
@@ -102,6 +111,38 @@ fn run(mut app: App, path: &str) -> Result<(), String> {
     let _ = restore();
     result?;
     save(&mut app, path)
+}
+
+/// A server model in the real terminal: the token from
+/// `IMPROV_API_TOKEN`, else typed at the prompt; the screen redraws as
+/// the service's replies and changes arrive.
+// Coverage exclusion: needs a real tty, as `run`; `served::run` is tested.
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn run_served(url: &str) -> Result<(), String> {
+    let target = improv_client::remote::Target::parse(url)?;
+    let title = target.base().to_string();
+    let svc = improv_client::remote::Remote::new(target, || {})?;
+    let mut app = served::Served::new(svc, title, std::env::var("IMPROV_API_TOKEN").ok());
+    enable_raw_mode().map_err(|e| e.to_string())?;
+    execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture).map_err(|e| e.to_string())?;
+    let prev_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = restore();
+        prev_hook(info);
+    }));
+    let result = Terminal::new(CrosstermBackend::new(io::stdout()))
+        .and_then(|mut term| {
+            served::run(&mut term, &mut app, |tick| {
+                Some(match event::poll(tick) {
+                    Ok(true) => event::read().map(Some),
+                    Ok(false) => Ok(None),
+                    Err(e) => Err(e),
+                })
+            })
+        })
+        .map_err(|e| e.to_string());
+    let _ = restore();
+    result
 }
 
 /// Undo terminal setup. Safe to call multiple times.

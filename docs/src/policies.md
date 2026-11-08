@@ -14,7 +14,11 @@ so for [the web GUI](./web-gui.md#access); and by `improv policy check`
 for testing. A local model file has no protection of its own: whoever
 can read the file can read all of it, whatever its policies say, and
 `improv-gui`, `improv-cosmic` and `improv-tui` do not apply them to a
-file they open. The design
+file they open. To work as a restricted user from the desktop or the
+terminal, open the model through the server: `improv-gui https://…` and
+`improv-tui https://…` show what the server lets the token's user see,
+and grey out (or refuse) what it may not change (see [the desktop
+GUI](./gui-tour.md#a-model-on-a-server)). The design
 is in [the design note](https://codeberg.org/gregburd/improv/src/branch/main/docs/reviews/2026-11-02-cedar-policies.md).
 
 <video src="./img/policies-demo.mp4" controls muted loop playsinline width="100%"

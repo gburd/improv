@@ -57,6 +57,7 @@ struct Shell(app::WebApp<net::Remote>);
 impl eframe::App for Shell {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.0.frame(ui);
+        expose(&self.0.title, &self.0.probe);
     }
 }
 
@@ -64,7 +65,7 @@ impl eframe::App for Shell {
 /// title, and on `<body>` as JSON: `data-cells` (each visible cell's
 /// position and text), `data-tiles`, `data-zones`, `data-newformula` and
 /// `data-formulaerror`.
-pub(crate) fn expose(title: &str, p: &app::Probe) {
+fn expose(title: &str, p: &app::Probe) {
     let Some(doc) = web_sys::window().and_then(|w| w.document()) else {
         return;
     };

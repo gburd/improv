@@ -107,6 +107,7 @@ $I save-view m.db 1 "Revenue by quarter" 102 --rows Time --cols Product
 | GUI | `improv-gui m.db` | NeXTSTEP-style workspace: application menu top-left, worksheet windows, model browser. Double-click or Enter edits a cell; right-click a tile to move or filter it; type `Name = formula` on the formula list's last line. Run inside `nix develop` on NixOS so the GL/X11 libraries are found. |
 | Streaming | `producer \| improv stream m.db Revenue` | Edits in on stdin, changed cells out on stdout; saved at end of input. |
 | Server | `IMPROV_API_TOKEN=secret improv-server m.db` | JSON API on `127.0.0.1:3000`; see [The HTTP Server](./server.md). |
+| A server's model | `IMPROV_API_TOKEN=secret improv-gui https://host`, or `improv-tui https://host` | The GUI and the TUI as clients of `improv-server`, as the token's user: what its policies hide is absent, the server computes. `?sslrootcert=FILE` for a private CA; `http://` only to this machine. See [the desktop GUI](./gui-tour.md#a-model-on-a-server). |
 | Web GUI | `crates/gui_web/build.sh --release web`, then `improv-server m.db --static web` | The GUI in a browser at `http://127.0.0.1:3000/`; needs the wasm32 target and wasm-bindgen-cli. See [The Web GUI](./web-gui.md). |
 | COSMIC GUI | `cd crates/gui_cosmic && cargo run --locked --release -- m.db` | A preview, built from its own workspace (not in the release archives). See [The COSMIC Desktop GUI](./cosmic-gui.md). |
 | Postgres | `CREATE EXTENSION pg_improv` | Models over your tables; see [Improv in Postgres](./postgres.md). |

@@ -4,9 +4,11 @@
 //! sends over its `/v1` API and the change stream, and computes nothing.
 //!
 //! The look is the desktop's own code: `crates/gui`'s `theme`, `nxwin`,
-//! `menu` and `formula_highlight`, compiled unchanged through `#[path]`
-//! (they name each other as `crate::theme`, so they sit at the root), and
-//! `improv_client`'s autocomplete and located errors.
+//! `menu` and `formula_highlight`, and the worksheet app itself
+//! (`served.rs`, which improv-gui runs for a server model), compiled
+//! unchanged through `#[path]` (they name each other as `crate::theme`,
+//! so they sit at the root), and `improv_client`'s autocomplete and
+//! located errors.
 //!
 //! Off wasm32 the crate is its pure part alone, the accessibility tree's
 //! DOM model ([`a11y`]), so the workspace builds and tests it on every
@@ -40,15 +42,16 @@ mod menu;
 #[path = "../../gui/src/formula_highlight.rs"]
 mod formula_highlight;
 
+// The worksheet app, shared with improv-gui's server models.
 #[cfg(target_arch = "wasm32")]
+#[path = "../../gui/src/served.rs"]
 mod app;
 #[cfg(target_arch = "wasm32")]
 mod bridge;
 #[cfg(target_arch = "wasm32")]
-mod edit;
-#[cfg(target_arch = "wasm32")]
 mod net;
 #[cfg(target_arch = "wasm32")]
-mod web;
+#[path = "../../gui/src/served_edit.rs"]
+mod served_edit;
 #[cfg(target_arch = "wasm32")]
-pub(crate) use web::expose;
+mod web;

@@ -11,8 +11,19 @@ is made. Without an argument the model is in memory only.
 .PP
 A model is a store file made by
 .BR improv (1),
-or a Postgres model URL,
-.BI postgres:// user @ host / db ?model= name\fR.
+a Postgres model URL,
+.BI postgres:// user @ host / db ?model= name\fR,
+or the URL of an
+.BR improv-server (1),
+.BI https:// host\fR[\fB: port\fR][\fI/prefix\fR][\fB?sslrootcert=\fIFILE\fR]
+.RB ( http://
+only to this machine). A server model opens the web GUI's worksheets in
+the window, as the user its token names: what the server's access
+policies hide is absent, derived cells are the server's, what the user
+may not do is greyed out, and a refused change says why. Changes made
+elsewhere show as they happen. The certificate is checked against the
+operating system's CAs, or only against
+.IR FILE .
 .SH KEYS
 Key equivalents take Ctrl (Cmd on macOS):
 .BR s " save, " z " undo, " Z " or " y " redo, " h " hide, " q " quit."
@@ -46,6 +57,10 @@ caret in gray, and a tooltip shows the signature with the current
 argument in bold.
 .SH ENVIRONMENT
 .TP
+.B IMPROV_API_TOKEN
+The bearer token for a server model; without it the window asks for one.
+It is kept in memory only.
+.TP
 .B IMPROV_LOCALE
 The formula locale (else the OS locale): formulas are shown and typed in
 it, e.g. German names, a decimal comma and
@@ -59,6 +74,7 @@ As for
 .SH EXAMPLES
 .nf
 improv-gui sample.db
+IMPROV_API_TOKEN=$TOKEN improv-gui https://improv.example.com
 improv-gui 'postgres://me@127.0.0.1/sales?sslmode=disable&model=plan'
 .fi
 .SH AUTHOR

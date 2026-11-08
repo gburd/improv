@@ -1,16 +1,19 @@
-//! The web worksheet app: NeXT-look worksheet windows over a
-//! [`ModelService`] (the remote one, in the browser). Everything shown
-//! comes from the authority: the structure, each window's cells (derived
-//! ones computed there), and the changes it pushes. Nothing is computed
-//! here.
+//! The served worksheet app: NeXT-look worksheet windows over a
+//! [`ModelService`] whose authority is improv-server. The web GUI runs it
+//! in the browser (`crates/gui_web`, which includes this file by
+//! `#[path]`), and improv-gui runs it for an `https://` model. Everything
+//! shown comes from the authority: the structure, each window's cells
+//! (derived ones computed there), the capabilities that grey out what the
+//! caller may not do, and the changes it pushes. Nothing is computed
+//! here, and every refusal is shown on the status line.
 
 use std::collections::BTreeMap;
 
 use egui::{vec2, Align2, Color32, FontId, Rect, Sense, Stroke, StrokeKind};
 use improv_client::diagnostics::Diagnostic;
 use improv_client::wire::{
-    Cell, CellEdit, DefineReq, EditReq, Event, ModelService, NameReq, Request, Response, Structure,
-    UpdateMeasureReq, ViewReq,
+    Capabilities, Cell, CellEdit, DefineReq, EditReq, Event, ModelService, NameReq, Request,
+    Response, Structure, UpdateMeasureReq, ViewReq,
 };
 use improv_core_model::{Locale, Model, NumberFormat};
 
@@ -22,12 +25,27 @@ const ROW_H: f32 = 20.0;
 const COL_W: f32 = 90.0;
 const HEAD_W: f32 = 100.0;
 const TILE_H: f32 = 17.0;
+/// The app in a native window (improv-gui).
+#[cfg(not(target_arch = "wasm32"))]
+pub struct Served<S: ModelService>(pub WebApp<S>);
+
+#[cfg(not(target_arch = "wasm32"))]
+impl<S: ModelService> eframe::App for Served<S> {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.0.frame(ui);
+    }
+}
+
+/// The guide's page for this app.
+const GUIDE: &str = "https://gburd.github.io/improv/web-gui.html";
 /// Room the main menu takes at the workspace's left.
 const MENU_CLEAR: f32 = menu::MENU_W + 12.0;
 
 /// What a test reads off the page (`<body data-…>`): a canvas has no DOM,
 /// so the app publishes where its cells, tiles, drop zones and formula
 /// line are, and the formula error it shows.
+// On the desktop only the tests read it.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 #[derive(Default)]
 pub struct Probe {
     pub cells: Vec<serde_json::Value>,
@@ -59,6 +77,7 @@ struct GridOut<'a> {
 /// What a sent request was for, so its reply lands in the right place.
 enum Pending {
     Structure,
+    Capabilities,
     Window(u32, improv_client::wire::WindowReq),
     /// A change from the formula pane, a cell edit, a rename…: its status.
     Change(What),
@@ -88,6 +107,10 @@ struct Win {
 pub struct WebApp<S: ModelService> {
     svc: S,
     structure: Structure,
+    /// What the caller may do (hints: every request is checked again).
+    /// `None` until the server says, and from a server that does not:
+    /// nothing is greyed out then.
+    caps: Option<Capabilities>,
     /// The structure as a model without cells (for autocomplete and
     /// located errors).
     model: Model,
@@ -112,6 +135,10 @@ pub struct WebApp<S: ModelService> {
     key: Option<u64>,
     browser: bool,
     loaded: bool,
+    /// What the last frame showed, for a test (the web GUI publishes it
+    /// on the page): its title and where its cells, tiles and fields are.
+    pub title: String,
+    pub probe: Probe,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -146,6 +173,7 @@ impl<S: ModelService> WebApp<S> {
         let mut app = WebApp {
             svc,
             structure: Structure::default(),
+            caps: None,
             model: Model::new(),
             cache: Cache::default(),
             wins: Vec::new(),
@@ -162,11 +190,30 @@ impl<S: ModelService> WebApp<S> {
             key: None,
             browser: false,
             loaded: false,
+            title: String::new(),
+            probe: Probe::default(),
         };
         if login == Login::Trying {
-            app.ask(Request::Structure, Pending::Structure);
+            app.reload();
         }
         app
+    }
+
+    /// What the capabilities allow (`f` of them), or everything when the
+    /// server sent none. Hints only: the server checks every request.
+    fn may(&self, f: impl Fn(&Capabilities) -> bool) -> bool {
+        self.caps.as_ref().is_none_or(f)
+    }
+
+    /// Whether `measure` may be redefined, formatted or dropped.
+    fn may_define(&self, measure: u32) -> bool {
+        self.may(|c| c.measures.iter().any(|m| m.id == measure && m.define))
+    }
+
+    /// Whether some of `measure`'s cells may be edited: the structure's
+    /// hint, narrowed by the capabilities (`some` cells: try it).
+    fn may_edit(&self, m: &improv_client::wire::MeasureOut) -> bool {
+        m.editable && self.may(|c| c.measures.iter().any(|x| x.id == m.id && x.cells != "none"))
     }
 
     fn ask(&mut self, req: Request, why: Pending) {
@@ -220,6 +267,9 @@ impl<S: ModelService> WebApp<S> {
                 self.login = Login::In;
                 self.adopt(s);
             }
+            (Pending::Capabilities, Ok(Response::Capabilities(c))) => self.caps = Some(c),
+            // An older server without the route: no hints, nothing greyed.
+            (Pending::Capabilities, Err(_)) => self.caps = None,
             (Pending::Window(m, w), Ok(Response::Cells(c))) => {
                 let cells = c.cells.into_iter().map(|x| (x.at, x.value)).collect();
                 self.cache.fill(m, &w, cells);
@@ -300,6 +350,7 @@ impl<S: ModelService> WebApp<S> {
 
     fn reload(&mut self) {
         self.ask(Request::Structure, Pending::Structure);
+        self.ask(Request::Capabilities, Pending::Capabilities);
     }
 
     fn reload_windows(&mut self) {
@@ -436,7 +487,8 @@ impl<S: ModelService> WebApp<S> {
             .or(self.formula.2.as_ref())
             .map(|d| serde_json::json!({"message": d.message, "span": d.span.as_ref().map(|r| [r.start, r.end]), "hint": d.hint}));
         probe.live = self.svc.live();
-        crate::expose(&format!("improv-web: {}", self.status), &probe);
+        self.title = format!("improv-web: {}", self.status);
+        self.probe = probe;
     }
 
     fn login_panel(&mut self, root: &mut egui::Ui) {
@@ -487,7 +539,8 @@ impl<S: ModelService> WebApp<S> {
                 }
                 ctx.data_mut(|d| d.insert_temp(id, token));
             });
-        crate::expose("improv-web: log in", &Probe::default());
+        self.title = "improv-web: log in".into();
+        self.probe = Probe::default();
     }
 
     fn keys(&mut self, ctx: &egui::Context) {
@@ -508,7 +561,7 @@ impl<S: ModelService> WebApp<S> {
             })
         });
         if let Some(c) = cmd {
-            self.run(c);
+            self.run(ctx, c);
         }
     }
 
@@ -527,6 +580,10 @@ impl<S: ModelService> WebApp<S> {
             .and_then(|m| self.structure.measure(m))
             .and_then(|m| m.format);
         let has_focus = selected.is_some();
+        let define = selected.is_some_and(|m| self.may_define(m));
+        let structure = self.may(|c| c.edit_structure);
+        let add_measure = self.may(|c| c.add_measure);
+        let manage_views = self.may(|c| c.manage_views);
         let mut state = self.menu;
         let picked = menu::show(
             ctx,
@@ -534,17 +591,17 @@ impl<S: ModelService> WebApp<S> {
             ws.min + vec2(4.0, 4.0),
             &views,
             |c| match c {
-                Command::Undo | Command::Redo | Command::ModelBrowser | Command::AddCategory => {
-                    true
-                }
-                Command::AddInputMeasure | Command::SaveView | Command::Keys => true,
+                Command::Undo | Command::Redo | Command::ModelBrowser => true,
+                Command::Keys | Command::Quit | Command::Hide => true,
                 Command::OpenView(_) | Command::FunctionHelp | Command::UserGuide => true,
-                Command::AddMatrix | Command::PivotRotate | Command::Rename | Command::AddItem => {
-                    has_focus
-                }
+                Command::AddCategory => structure,
+                Command::AddInputMeasure => add_measure,
+                Command::SaveView => manage_views,
+                Command::AddMatrix | Command::PivotRotate => has_focus,
+                Command::AddItem => has_focus && structure,
+                Command::Rename | Command::Delete => has_focus && define,
                 Command::RemoveMatrix => self.wins.len() > 1,
-                Command::Delete => has_focus,
-                Command::Decimals(_) | Command::Grouping => numeric,
+                Command::Decimals(_) | Command::Grouping => numeric && define,
                 _ => false,
             },
             |c| match c {
@@ -555,11 +612,11 @@ impl<S: ModelService> WebApp<S> {
         );
         self.menu = state;
         if let Some(c) = picked {
-            self.run(c);
+            self.run(ctx, c);
         }
     }
 
-    fn run(&mut self, c: Command) {
+    fn run(&mut self, ctx: &egui::Context, c: Command) {
         let focused = self.focused().map(|w| (w.uid, w.sheet.measure));
         match c {
             Command::Undo => self.change(Request::Undo, What::Other),
@@ -618,12 +675,10 @@ impl<S: ModelService> WebApp<S> {
             }
             Command::Decimals(d) => self.format(|f| f.decimals = d),
             Command::Grouping => self.format(|f| f.grouping = !f.grouping),
-            Command::UserGuide => {
-                if let Some(w) = web_sys::window() {
-                    let _ = w.open_with_url("https://gburd.github.io/improv/web-gui.html");
-                }
-            }
-            _ => self.status = "not in the web GUI yet".into(),
+            Command::UserGuide => ctx.open_url(egui::OpenUrl::new_tab(GUIDE)),
+            Command::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+            Command::Hide => ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true)),
+            _ => self.status = "not on a server model yet".into(),
         }
     }
 
@@ -963,6 +1018,7 @@ impl<S: ModelService> WebApp<S> {
     ) {
         let w = &self.wins[i];
         let st = &self.structure;
+        let editable = self.may_edit(m);
         let rows = Sheet::tuples(st, w.sheet.rows());
         let cols = Sheet::tuples(st, w.sheet.cols());
         let name = |c: u32, it: u32| {
@@ -1194,7 +1250,7 @@ impl<S: ModelService> WebApp<S> {
                             // Every cell takes a screen reader's focus (the
                             // request moves the cursor there).
                             n.add_action(egui::accesskit::Action::Focus);
-                            if !m.editable {
+                            if !editable {
                                 n.set_read_only();
                             }
                         });
@@ -1236,7 +1292,7 @@ impl<S: ModelService> WebApp<S> {
                                 cell_id,
                                 out,
                             );
-                            if m.editable {
+                            if editable {
                                 // Enter edits the value; typing replaces it.
                                 let (enter, typed_text) = ui.input(|i| {
                                     let t: String = i
@@ -1256,7 +1312,7 @@ impl<S: ModelService> WebApp<S> {
                                 }
                             }
                         }
-                        if m.editable && (resp.double_clicked() || sr_click) {
+                        if editable && (resp.double_clicked() || sr_click) {
                             *out.start_edit = Some((at, typed, true));
                         }
                     }
@@ -1378,7 +1434,7 @@ impl<S: ModelService> WebApp<S> {
                         let id = egui::Id::unique(("formula_edit", uid));
                         let span = self.formula.2.as_ref().and_then(|d| d.span.clone());
                         ui.label(format!("{} =", x.name));
-                        let resp = crate::edit::assisted(
+                        let resp = crate::served_edit::assisted(
                             ui,
                             &self.model,
                             &mut self.formula.1,
@@ -1391,15 +1447,21 @@ impl<S: ModelService> WebApp<S> {
                             *commit = Some((x.id, self.formula.1.clone()));
                         }
                     } else {
-                        let r = ui.selectable_label(x.id == m.id, format!("{} = {text}", x.name));
-                        if r.clicked() {
+                        // A formula that reads a hidden measure is not
+                        // shown: the measure shows without it.
+                        let line = match &x.formula {
+                            Some(_) => format!("{} = {text}", x.name),
+                            None => x.name.clone(),
+                        };
+                        let r = ui.selectable_label(x.id == m.id, line);
+                        if r.clicked() && x.formula.is_some() && self.may_define(x.id) {
                             self.formula = (Some(x.id), text.clone(), None);
                         }
                     }
                 });
                 if mine {
                     if let Some(d) = &self.formula.2 {
-                        crate::edit::error_lines(ui, d);
+                        crate::served_edit::error_lines(ui, d);
                     }
                 }
                 if let Some(e) = &x.error {
@@ -1407,9 +1469,12 @@ impl<S: ModelService> WebApp<S> {
                 }
             }
         });
+        if !self.may(|c| c.add_measure) {
+            return;
+        }
         let id = egui::Id::unique(("formula_new", uid));
         let span = self.new_formula.1.as_ref().and_then(|d| d.span.clone());
-        let resp = crate::edit::assisted(
+        let resp = crate::served_edit::assisted(
             ui,
             &self.model,
             &mut self.new_formula.0,
@@ -1428,7 +1493,7 @@ impl<S: ModelService> WebApp<S> {
             *new = Some(self.new_formula.0.clone());
         }
         if let Some(d) = &self.new_formula.1 {
-            crate::edit::error_lines(ui, d);
+            crate::served_edit::error_lines(ui, d);
         }
     }
 
@@ -1442,6 +1507,16 @@ impl<S: ModelService> WebApp<S> {
             egui::pos2(ws.max.x - 260.0, ws.min.y + 8.0),
             vec2(250.0, 320.0),
         );
+        let structure = self.may(|c| c.edit_structure);
+        let define = |m: u32| self.may_define(m);
+        let item = |i: u32| self.may(|c| c.edit_items.contains(&i));
+        // A small button, greyed when the capabilities say no, named for a
+        // screen reader ("Rename Price", not "rename").
+        let small = |ui: &mut egui::Ui, on: bool, text: &str, name: String| {
+            ui.add_enabled(on, egui::Button::new(text).small())
+                .accessible_name(name)
+                .clicked()
+        };
         let _ = crate::nxwin::NxWindow::new("browser", "Model Browser")
             .rect(at)
             .bounds(ws)
@@ -1459,10 +1534,7 @@ impl<S: ModelService> WebApp<S> {
                             if r.clicked() {
                                 open_measure = Some(m.id);
                             }
-                            let b = ui
-                                .small_button("rename")
-                                .accessible_name(format!("Rename {}", m.name));
-                            if b.clicked() {
+                            if small(ui, define(m.id), "rename", format!("Rename {}", m.name)) {
                                 prompt = Some((Prompt::RenameMeasure(m.id), m.name.clone()));
                             }
                         });
@@ -1471,22 +1543,14 @@ impl<S: ModelService> WebApp<S> {
                     for c in &self.structure.categories {
                         ui.horizontal(|ui| {
                             ui.label(&c.name);
-                            let b = ui
-                                .small_button("rename")
-                                .accessible_name(format!("Rename {}", c.name));
-                            if b.clicked() {
+                            if small(ui, structure, "rename", format!("Rename {}", c.name)) {
                                 prompt = Some((Prompt::RenameCategory(c.id), c.name.clone()));
                             }
-                            let b = ui
-                                .small_button("+ item")
-                                .accessible_name(format!("Add an item to {}", c.name));
-                            if b.clicked() {
+                            let add = format!("Add an item to {}", c.name);
+                            if small(ui, structure, "+ item", add) {
                                 prompt = Some((Prompt::AddItem(c.id), String::new()));
                             }
-                            let b = ui
-                                .small_button("delete")
-                                .accessible_name(format!("Delete {}", c.name));
-                            if b.clicked() {
+                            if small(ui, structure, "delete", format!("Delete {}", c.name)) {
                                 act = Some(Request::DeleteCategory(c.id));
                             }
                         });
@@ -1494,16 +1558,11 @@ impl<S: ModelService> WebApp<S> {
                             ui.horizontal(|ui| {
                                 ui.add_space(16.0);
                                 ui.label(&it.name);
-                                let b = ui
-                                    .small_button("rename")
-                                    .accessible_name(format!("Rename {}", it.name));
-                                if b.clicked() {
+                                let ok = item(it.id);
+                                if small(ui, ok, "rename", format!("Rename {}", it.name)) {
                                     prompt = Some((Prompt::RenameItem(it.id), it.name.clone()));
                                 }
-                                let b = ui
-                                    .small_button("delete")
-                                    .accessible_name(format!("Delete {}", it.name));
-                                if b.clicked() {
+                                if small(ui, ok, "delete", format!("Delete {}", it.name)) {
                                     act = Some(Request::DeleteItem(it.id));
                                 }
                             });
@@ -1608,5 +1667,233 @@ impl<S: ModelService> WebApp<S> {
             }),
         };
         self.change(req, What::Other);
+    }
+}
+
+/// The app over a real authority in process, as a restricted user: what it
+/// draws, what it greys out, and what it shows of a refusal. (The web GUI
+/// runs the same file over HTTP; `crates/server/tests/remote.rs` checks
+/// the remote service against the server.)
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use super::*;
+    use crate::TestFrames as _;
+    use improv_core_model::{
+        BinaryOp, CategoryId, Coordinate, DimensionSpec, Expr, Formula, ItemId, Measure, MeasureId,
+        MeasureKind, Name, Value, ValueType,
+    };
+
+    /// Ann: no WidgetB (21), no Price (100); edits Quantity at 2025 only.
+    /// Root: everything.
+    const POLICIES: &str = r#"
+        permit (principal, action in Improv::Action::"Read", resource);
+        forbid (principal == Improv::User::"ann", action in Improv::Action::"Read",
+                resource in Improv::Item::"21");
+        forbid (principal == Improv::User::"ann", action in Improv::Action::"Read",
+                resource in Improv::Measure::"100");
+        permit (principal == Improv::User::"ann", action == Improv::Action::"EditCell",
+                resource in Improv::Item::"10");
+        permit (principal == Improv::User::"root", action, resource);
+    "#;
+
+    fn model() -> Model {
+        let mut m = Model::new();
+        let (time, product) = (CategoryId(1), CategoryId(2));
+        m.add_category(time, "Time");
+        m.add_category(product, "Product");
+        m.add_item(ItemId(10), time, "2025");
+        m.add_item(ItemId(11), time, "2026");
+        m.add_item(ItemId(20), product, "WidgetA");
+        m.add_item(ItemId(21), product, "WidgetB");
+        let input = |id, name: &str, cats| Measure {
+            id: MeasureId(id),
+            name: Name(name.into()),
+            value_type: ValueType::Number,
+            categories: cats,
+            kind: MeasureKind::Input,
+            description: None,
+            format: None,
+        };
+        m.add_measure(input(100, "Price", vec![product]));
+        m.add_measure(input(101, "Quantity", vec![time, product]));
+        let mut rev = input(102, "Revenue", vec![time, product]);
+        rev.kind = MeasureKind::Derived(Formula::new(Expr::BinaryOp(
+            BinaryOp::Mul,
+            Box::new(Expr::Ref(MeasureId(100), DimensionSpec::default())),
+            Box::new(Expr::Ref(MeasureId(101), DimensionSpec::default())),
+        )));
+        m.add_measure(rev);
+        let at = |p: &[(u32, u32)]| {
+            Coordinate::from_pairs(p.iter().map(|(c, i)| (CategoryId(*c), ItemId(*i))))
+        };
+        m.set_input(MeasureId(100), at(&[(2, 20)]), Value::Number(10.0));
+        m.set_input(MeasureId(100), at(&[(2, 21)]), Value::Number(20.0));
+        for (t, p, q) in [
+            (10, 20, 100.0),
+            (10, 21, 50.0),
+            (11, 20, 120.0),
+            (11, 21, 80.0),
+        ] {
+            m.set_input(MeasureId(101), at(&[(1, t), (2, p)]), Value::Number(q));
+        }
+        m
+    }
+
+    type App = WebApp<improv_service::local::Local>;
+
+    /// The app as `who`, over the model stored with [`POLICIES`].
+    fn open(who: &str) -> (egui::Context, App, std::path::PathBuf) {
+        let path = std::env::temp_dir().join(format!(
+            "improv-served-{who}-{}-{:?}.db",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let p = path.to_str().unwrap();
+        let mut s = improv_store::Store::open(p).unwrap();
+        s.save_model(&model()).unwrap();
+        s.save_policies(Some((POLICIES, ""))).unwrap();
+        drop(s);
+        let policy = improv_service::cedar::CedarPolicy::new(p, improv_policy::Channel::Server);
+        let a = improv_service::authority::Authority::with_policy(p, Box::new(policy)).unwrap();
+        let svc = improv_service::local::Local::new(a, improv_policy::Principal::user(who));
+        let ctx = egui::Context::default();
+        crate::theme::install_fonts(&ctx);
+        let app = WebApp::new(&ctx, svc, Some(String::new()));
+        (ctx, app, path)
+    }
+
+    fn frame(ctx: &egui::Context, app: &mut App, events: Vec<egui::Event>) {
+        let raw = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, vec2(1280.0, 800.0))),
+            events,
+            ..Default::default()
+        };
+        let _ = ctx.test_ui(raw, |ui| app.frame(ui));
+    }
+
+    fn settle(ctx: &egui::Context, app: &mut App) {
+        for _ in 0..4 {
+            frame(ctx, app, vec![]);
+        }
+    }
+
+    fn texts(app: &App, measure: &str) -> Vec<String> {
+        app.probe
+            .cells
+            .iter()
+            .filter(|c| c["measure"] == measure)
+            .map(|c| c["text"].as_str().unwrap().to_owned())
+            .collect()
+    }
+
+    #[test]
+    fn a_restricted_user_sees_only_what_the_server_sends() {
+        let (ctx, mut app, path) = open("ann");
+        settle(&ctx, &mut app);
+        assert_eq!(app.title, "improv-web: ready");
+        // Price is absent everywhere; WidgetB has no row or column.
+        let names: Vec<&str> = app
+            .structure
+            .measures
+            .iter()
+            .map(|m| m.name.as_str())
+            .collect();
+        assert_eq!(names, ["Quantity", "Revenue"]);
+        assert!(app.probe.cells.iter().all(|c| c["measure"] != "Price"));
+        assert_eq!(texts(&app, "Quantity"), ["100", "120"]);
+        // Revenue is the server's (over the Price ann cannot see).
+        assert_eq!(texts(&app, "Revenue"), ["1000", "1200"]);
+        // The capabilities: no new measures, categories or items.
+        let caps = app.caps.clone().expect("capabilities");
+        assert!(caps.restricted && !caps.add_measure && !caps.edit_structure);
+        assert!(!app.may(|c| c.add_measure) && !app.may_define(102));
+        let q = app.structure.measure(101).cloned().unwrap();
+        let r = app.structure.measure(102).cloned().unwrap();
+        assert!(app.may_edit(&q) && !app.may_edit(&r));
+        // Revenue shows without its formula (it reads hidden Price).
+        assert_eq!(r.formula, None);
+        std::fs::remove_file(path).ok();
+    }
+
+    /// A refused edit is shown, and the server's value comes back; an
+    /// allowed one recomputes Revenue there.
+    #[test]
+    fn every_refusal_is_shown_and_the_authority_wins() {
+        let (ctx, mut app, path) = open("ann");
+        settle(&ctx, &mut app);
+        let q = app.structure.measure(101).cloned().unwrap();
+        // 2026 is not hers to edit.
+        app.commit_cell(&q, vec![(1, 11), (2, 20)], "5");
+        settle(&ctx, &mut app);
+        assert!(app.status.starts_with("not saved: "), "{}", app.status);
+        assert_eq!(texts(&app, "Quantity"), ["100", "120"]);
+        // A rename she may not make: refused, said.
+        app.change(
+            Request::RenameItem(20, NameReq { name: "X".into() }),
+            What::Other,
+        );
+        settle(&ctx, &mut app);
+        assert_eq!(app.status, "not allowed");
+        // 2025 is: Revenue follows from the server.
+        app.commit_cell(&q, vec![(1, 10), (2, 20)], "150");
+        settle(&ctx, &mut app);
+        assert_eq!(app.status, "1 cell set");
+        assert_eq!(texts(&app, "Revenue"), ["1500", "1200"]);
+        std::fs::remove_file(path).ok();
+    }
+
+    /// Another program's write reaches the app as a change (here the
+    /// in-process service's refresh; over HTTP, `/v1/changes`).
+    #[test]
+    fn outside_writes_arrive_as_changes() {
+        let (ctx, mut app, path) = open("ann");
+        settle(&ctx, &mut app);
+        let p = path.to_str().unwrap();
+        let mut s = improv_store::Store::open(p).unwrap();
+        let mut m = s.load_model().unwrap();
+        m.set_input(
+            MeasureId(101),
+            Coordinate::from_pairs([(CategoryId(1), ItemId(11)), (CategoryId(2), ItemId(20))]),
+            Value::Number(7.0),
+        );
+        s.save_model(&m).unwrap();
+        drop(s);
+        settle(&ctx, &mut app);
+        assert_eq!(texts(&app, "Quantity"), ["100", "7"]);
+        assert_eq!(texts(&app, "Revenue"), ["1000", "70"]);
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn an_unrestricted_user_may_do_everything_and_quit() {
+        let (ctx, mut app, path) = open("root");
+        settle(&ctx, &mut app);
+        assert!(app
+            .caps
+            .as_ref()
+            .is_some_and(|c| c.add_measure && c.edit_structure));
+        assert!(app.may_define(102));
+        // A server without capabilities (an older one): nothing greyed.
+        app.caps = None;
+        assert!(app.may(|_| false));
+        app.run(&ctx, Command::AddMatrix);
+        assert_eq!(app.wins.len(), 4);
+        app.run(&ctx, Command::Print);
+        assert_eq!(app.status, "not on a server model yet");
+        // Quit closes the window (a viewport command, not a request).
+        let out = ctx.test_ui(egui::RawInput::default(), |ui| {
+            app.run(ui.ctx(), Command::Quit);
+        });
+        let closes = out.viewport_output.values().any(|v| {
+            v.commands
+                .iter()
+                .any(|c| matches!(c, egui::ViewportCommand::Close))
+        });
+        assert!(closes);
+        settle(&ctx, &mut app);
+        assert!(app.probe.browserbutton.is_some() && app.probe.newformula.is_some());
+        assert!(app.probe.live && !app.probe.tiles.is_empty() && !app.probe.zones.is_empty());
+        std::fs::remove_file(path).ok();
     }
 }

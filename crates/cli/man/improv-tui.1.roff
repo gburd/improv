@@ -12,8 +12,23 @@ and the status line says why; the edits stay in the session.
 .PP
 A model is a store file made by
 .BR improv (1),
-or a Postgres model URL,
-.BI postgres:// user @ host / db ?model= name\fR.
+a Postgres model URL,
+.BI postgres:// user @ host / db ?model= name\fR,
+or the URL of an
+.BR improv-server (1),
+.BI https:// host\fR[\fB: port\fR][\fI/prefix\fR][\fB?sslrootcert=\fIFILE\fR]
+.RB ( http://
+only to this machine). A server model shows one measure's grid as the
+user its token names: what the server's access policies hide is absent,
+derived cells are the server's, a cell the user may not edit says so, and
+a refused change says why. Changes made elsewhere redraw as they happen.
+There it takes the arrows,
+.BR e / Enter " (edit), " Tab " (measure), " p " (pivot), "
+.BR "[ ]" " (page), " u / Ctrl+R " (undo and redo, on the server), "
+.BR R " (re-read) and " q .
+The certificate is checked against the operating system's CAs, or only
+against
+.IR FILE .
 A model opens on its first saved view, or, with none, on its first
 measure;
 .B Tab
@@ -203,6 +218,12 @@ into the cell being edited (F1 works while editing); Esc closes.
 Quit and save.
 .SH ENVIRONMENT
 .TP
+.B IMPROV_API_TOKEN
+The bearer token for a server model; without it the TUI asks for one
+(typed as
+.BR * ).
+It is kept in memory only.
+.TP
 .B IMPROV_LOCALE
 The locale (else the OS locale): the decimal and thousands separators a
 number cell takes and a number format writes,
@@ -216,6 +237,7 @@ for
 improv-tui sample.db
 improv-tui new.db   # empty: c, n, e and = build it, w saves
 improv-tui 'postgres://me@127.0.0.1/sales?sslmode=disable&model=plan'
+IMPROV_API_TOKEN=$TOKEN improv-tui https://improv.example.com
 .fi
 .SH AUTHOR
 Greg Burd <greg@burd.me>

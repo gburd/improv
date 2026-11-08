@@ -99,6 +99,10 @@ and the server's new Revenue (12 × 250) without reloading.*
 *The Model Browser, opened from the status bar's **Model Browser**
 button.*
 
+The desktop GUI runs the same worksheets for a server URL
+(`improv-gui https://…`; see [the desktop GUI](./gui-tour.md#a-model-on-a-server)),
+from the same code (`crates/gui/src/served.rs`).
+
 ## What it does not do yet
 
 The CSV wizard, graphs, the Info panel, the Inspector and the Format
@@ -115,7 +119,10 @@ it touches, with the token's name as the Cedar user (see [The HTTP
 Server](./server.md#access-policies)). A hidden measure, item or cell is
 absent from what the page receives, and an edit of a cell the user may
 not change is refused. Totals stay computed over everything, by the
-server.
+server. What the user may not do is greyed out, from the server's
+`GET /v1/capabilities`: the menu commands, the Model Browser's buttons,
+the formula lines and the input cells. They are hints; the server checks
+every request.
 
 ## Accessibility
 

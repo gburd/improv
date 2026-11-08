@@ -66,6 +66,21 @@ this project follows [Semantic Versioning](https://semver.org/).
   is refused to any host but this machine, redirects are not followed,
   and a certificate error names the problem. `Request::Capabilities`
   (`GET /v1/capabilities`) joins the model service's requests.
+- **The desktop GUI opens server models.** `improv-gui
+  https://host[:port]` (or `http://` on this machine, or
+  `?sslrootcert=FILE` for a private CA) runs the web GUI's worksheets
+  natively, in the NeXT look, as the user `IMPROV_API_TOKEN` names (else
+  the window asks): what the server's policies hide is absent, derived
+  cells are the server's, and changes made elsewhere show as they
+  happen. Both GUIs now grey out what the user may not do, from the
+  server's capabilities (menus, the Model Browser's buttons, formula
+  lines, cells), and show every refusal on the status line.
+- **The TUI opens server models.** `improv-tui https://host` shows one
+  measure's grid over the server's `/v1` API, as the token's user, with
+  pages, pivoting, cell edits and undo on the server; a cell the user may
+  not edit says so, a refusal says why, and other writers' changes
+  redraw as they arrive. The token comes from `IMPROV_API_TOKEN` or a
+  prompt.
 
 ### Fixed
 

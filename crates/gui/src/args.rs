@@ -13,7 +13,8 @@ use clap::Parser;
     long_about = "Open a model in a NeXTSTEP-style workspace."
 )]
 pub struct Cli {
-    /// The model: a store file, or postgres://USER@HOST/DB?model=NAME.
+    /// The model: a store file, postgres://USER@HOST/DB?model=NAME, or an
+    /// improv-server's https://HOST:PORT (http:// only on this machine).
     /// Without it the model is in memory only
     #[arg(value_name = "model")]
     pub model: Option<String>,

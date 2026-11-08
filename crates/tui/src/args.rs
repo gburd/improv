@@ -13,7 +13,8 @@ use clap::Parser;
     long_about = "Show one measure of a model as a pivot grid in the terminal."
 )]
 pub struct Cli {
-    /// The model: a store file (a new one opens empty), or postgres://USER@HOST/DB?model=NAME
+    /// The model: a store file (a new one opens empty), postgres://USER@HOST/DB?model=NAME, or
+    /// an improv-server's https://HOST:PORT (http:// only on this machine)
     #[arg(value_name = "model")]
     pub model: String,
 }

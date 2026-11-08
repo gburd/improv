@@ -11,9 +11,11 @@ sends edits. User guide: [`docs/src/web-gui.md`](../../docs/src/web-gui.md).
   and sends a screen reader's clicks and focus back to egui.
 - `src/net.rs`: the remote `ModelService` (`fetch`, and the change stream
   read with `fetch`, with backoff and `?since=` resume).
-- `src/app.rs`: the worksheet windows, gutters and tiles, grid, formula
-  pane, menus, model browser and login.
-- `src/edit.rs`: the formula edit with autocomplete.
+- `crates/gui/src/served.rs` (as `app`): the worksheet windows, gutters
+  and tiles, grid, formula pane, menus, model browser and login, greyed
+  out by the server's capabilities. improv-gui runs the same file for an
+  `https://` model.
+- `crates/gui/src/served_edit.rs`: the formula edit with autocomplete.
 - `crates/gui`'s `theme`, `nxwin`, `menu` and `formula_highlight` compile
   in unchanged through `#[path]`.
 

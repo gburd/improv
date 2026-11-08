@@ -15,12 +15,16 @@ improv_store = { path = "../store" }
 improv_storage_csv = { path = "../storage_csv" }
 improv_engine = { path = "../engine" }
 improv_nl_formula = { path = "../nl_formula" }
-improv_client = { path = "../client" }
+improv_client = { path = "../client", features = ["remote"] }
 thiserror.workspace = true
 ratatui.workspace = true
 crossterm.workspace = true
 
 [dev-dependencies]
+# The served app's tests drive it over an authority in process, under
+# stored Cedar policies.
+improv_service = { path = "../service" }
+improv_policy = { path = "../policy" }
 # The crash-safety tests check the store file with SQLite's integrity_check.
 mentat.workspace = true
 improv_storage_mentat = { path = "../storage_mentat" }

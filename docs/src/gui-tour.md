@@ -592,6 +592,48 @@ the recomputed revenue (1200):
 
 ![The GUI on a Postgres model](./img/gui-postgres.png)
 
+## A model on a server
+
+The GUI opens a model that `improv-server` serves from its URL:
+
+```sh
+IMPROV_API_TOKEN=$TOKEN improv-gui https://improv.example.com
+improv-gui 'https://improv.internal:3443?sslrootcert=/etc/improv/ca.pem'
+improv-gui http://127.0.0.1:3000          # http:// only on this machine
+```
+
+The window then runs the [web GUI](./web-gui.md)'s worksheets, natively:
+the same windows, gutters, formula pane, menus and Model Browser, in the
+same NeXT look, over the server's `/v1` API. The server keeps the model
+and the engine; the GUI computes nothing and holds only what it shows.
+As the user the token names, under the model's [access
+policies](./policies.md):
+
+- What the policies hide (a measure, an item, a cell) is absent, not
+  blank. A derived measure whose formula reads a hidden one shows
+  without its formula.
+- Derived cells and totals are the server's, computed over everything.
+- What the user may not do is greyed out (the server's capabilities):
+  the menus, the Model Browser's buttons, the formula lines and the
+  cells. The server still checks every request, and a refusal says why
+  on the status line; a refused cell shows the server's value again.
+- Changes made elsewhere (another GUI, the CLI, a browser) show as they
+  happen, from the server's change stream; the status bar says `live`
+  while it is connected, and it reconnects by itself.
+- The keyboard works as in the web GUI: Tab reaches each grid at its
+  cursor cell, the arrows, Home and End move it, and Enter or typing
+  edits it (see [the web GUI's Accessibility](./web-gui.md#accessibility)).
+  The desktop's own AccessKit bridge gives a screen reader the same grid,
+  names and announcements.
+
+The token comes from `IMPROV_API_TOKEN`, or the window asks for it; it is
+held in memory, never written down. `https://` is always verified, against
+the operating system's CAs, or with `?sslrootcert=FILE` only that CA.
+`http://` is refused for any host but this one, so a token never crosses a
+network in cleartext. The desktop-only parts (graphs, printing, the
+Inspector, the CSV wizard) are not there yet on a server model: see the
+web GUI's [What it does not do yet](./web-gui.md#what-it-does-not-do-yet).
+
 ## Platforms
 
 | Platform | Status |
