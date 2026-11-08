@@ -1695,7 +1695,7 @@ fn live_tls_wrong_hostname_and_unknown_ca_are_refused() {
     ] {
         let e = tls_refusal(&format!(
             "{dsn} host={h} hostaddr={addr} sslmode={mode} sslrootcert={}",
-            other.display()
+            tls::tests::quoted(&other)
         ));
         assert!(
             e.contains("not signed by a CA Improv trusts"),

@@ -488,6 +488,12 @@ pub(crate) mod tests {
                 ]
             )
         );
+        // A Windows path, as the tests write it.
+        let win = Path::new(r"C:\Users\it's\ca.pem");
+        assert_eq!(
+            take(&format!("host=h sslrootcert={}", quoted(win))).1,
+            vec![("sslrootcert".into(), r"C:\Users\it's\ca.pem".into())]
+        );
         assert_eq!(take(""), (String::new(), vec![]));
         assert_eq!(take("host=h"), ("host=h".to_string(), vec![]));
         assert_eq!(
@@ -590,6 +596,13 @@ pub(crate) mod tests {
         }
         let e = transport(VerifyCa, Hosts::Remote, &RootCert::System).unwrap_err();
         assert!(e.contains("verify-ca needs sslrootcert"), "{e}");
+    }
+
+    /// `path` as a quoted keyword/value value: a Windows path's backslashes
+    /// would otherwise read as escapes, as in libpq.
+    pub(crate) fn quoted(path: &Path) -> String {
+        let p = path.display().to_string();
+        format!("'{}'", p.replace('\\', "\\\\").replace('\'', "\\'"))
     }
 
     /// A CA and a server certificate for `names`, signed by it.
@@ -747,7 +760,7 @@ pub(crate) mod tests {
             format!(
                 "host={name} hostaddr=127.0.0.1 port={port} user=u password=hunter2 \
                  sslrootcert={} {extra}",
-                ca.display()
+                quoted(&ca)
             )
         };
         // Right CA, right name: the handshake completes; the fake server
@@ -796,7 +809,7 @@ pub(crate) mod tests {
             let e = tls_err(connect_err(&format!(
                 "host=db.improv.test hostaddr=127.0.0.1 port={port} user=u \
                  sslmode={mode} sslrootcert={}",
-                other.display()
+                quoted(&other)
             )));
             assert!(
                 e.contains("not signed by a CA Improv trusts"),
@@ -828,7 +841,7 @@ pub(crate) mod tests {
         let (port, server) = fake_server(Some(&pki));
         let e = tls_err(connect_err(&format!(
             "host=db.improv.test hostaddr=127.0.0.1 port={port} user=u sslrootcert={}",
-            ca.display()
+            quoted(&ca)
         )));
         assert_eq!(e, "the server's certificate has expired");
         server.join().unwrap();
@@ -859,7 +872,7 @@ pub(crate) mod tests {
         std::fs::write(&empty, "not a certificate\n").unwrap();
         let e = refused(&format!(
             "host=db.example.com sslrootcert={}",
-            empty.display()
+            quoted(&empty)
         ));
         assert!(e.ends_with("no certificate in it"), "{e}");
         std::fs::remove_file(empty).ok();
