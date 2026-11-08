@@ -32,9 +32,10 @@ use improv_core_model::{
     ExternalFn, Formula, ItemId, Measure, MeasureId, MeasureKind, Model, Name, Scenario,
     ScenarioId, SqlSource, Value, ValueType,
 };
-use postgres::config::{Host, SslMode};
-use postgres::{Client, Config, GenericClient, IsolationLevel, NoTls};
+use postgres::{Client, GenericClient, IsolationLevel};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+
+pub mod tls;
 
 #[cfg(test)]
 mod tests;
@@ -209,37 +210,6 @@ pub fn split_model_url(url: &str) -> Result<(String, String)> {
         format!("{base}?{}", rest.join("&"))
     };
     Ok((conn, model))
-}
-
-/// Refuse to send credentials in cleartext off-host, or to ask for TLS this
-/// build lacks (same policy as `improv_storage_sql::connect_postgres`).
-fn check_transport(config: &Config) -> Result<()> {
-    let no_tls = |why: &str| {
-        Err(StoreError::Pg(format!(
-            "TLS isn't built into this build of Improv; {why}"
-        )))
-    };
-    let mode = config.get_ssl_mode();
-    if mode == SslMode::Require {
-        return no_tls("sslmode=require cannot be honoured (use an SSH tunnel to a loopback port)");
-    }
-    let local = config.get_hosts().iter().all(|h| match h {
-        Host::Tcp(name) => {
-            name.eq_ignore_ascii_case("localhost")
-                || name
-                    .parse::<std::net::IpAddr>()
-                    .is_ok_and(|ip| ip.is_loopback())
-        }
-        #[cfg(unix)]
-        Host::Unix(_) => true,
-    }) && config.get_hostaddrs().iter().all(|ip| ip.is_loopback());
-    if !local && mode != SslMode::Disable {
-        return no_tls(
-            "refusing a non-loopback host without an explicit sslmode=disable \
-             (the password would cross the network in cleartext)",
-        );
-    }
-    Ok(())
 }
 
 /// Quote an identifier the way `quote_ident` does (always quoted).
@@ -857,15 +827,15 @@ impl PgModelStore {
     /// Creates the `improv.*` catalog ([`CATALOG_SQL`]) if it is missing.
     pub fn open(url: &str) -> Result<Self> {
         let (conn, name) = split_model_url(url)?;
-        let config: Config = conn
-            .parse()
-            .map_err(|_| StoreError::Pg("invalid postgres connection string (redacted)".into()))?;
-        check_transport(&config)?;
         // A non-database connect error may echo the DSN; keep only its kind.
-        let mut client = config.connect(NoTls).map_err(|e| {
-            StoreError::Pg(match e.as_db_error() {
-                Some(db) => format!("postgres connect failed: {}", db.message()),
-                None => "postgres connect failed (connection error)".into(),
+        let mut client = tls::connect(&conn).map_err(|e| {
+            StoreError::Pg(match e {
+                tls::ConnectError::Refused(m) => m,
+                tls::ConnectError::Tls(m) => format!("postgres connect failed: {m}"),
+                tls::ConnectError::Driver(e) => match e.as_db_error() {
+                    Some(db) => format!("postgres connect failed: {}", db.message()),
+                    None => "postgres connect failed (connection error)".into(),
+                },
             })
         })?;
         // The newest catalog objects: an older catalog is upgraded in place

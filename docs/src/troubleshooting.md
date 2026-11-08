@@ -124,7 +124,10 @@ division (`IFERROR(A / B, 0)`, or `IF(B = 0, NA(), A / B)`).
 | `error: value must be a number, got '<v>'` | `set` parses the value by the measure's declared type. |
 | `error: mentat error: SQL error: unable to open database file: <path> …` | The store path's directory does not exist, or is not writable. |
 | `error: postgres error: a postgres model URL needs ?model=<name> …` | A Postgres target names one model: `postgres://me@db/sales?model=plan`. |
-| `error: postgres error: postgres connect failed (connection error)` | The server is unreachable, or refused the connection (host, port, `pg_hba.conf`, password). The Postgres connection has no TLS yet; use a loopback port or an SSH tunnel. |
+| `error: postgres error: postgres connect failed (connection error)` | The server is unreachable, or refused the connection (host, port, `pg_hba.conf`, password). |
+| `error: postgres error: postgres connect failed: the server does not offer TLS, …` | The host is not on this machine, so Improv uses TLS. Turn on `ssl` in the server's `postgresql.conf`, or (on a network you trust) add `sslmode=disable`. |
+| `error: postgres error: postgres connect failed: the server's certificate is not signed by a CA Improv trusts …` | Name the CA that signed the server's certificate: `sslrootcert=/path/ca.pem`. Without it Improv trusts the operating system's CAs. |
+| `error: postgres error: postgres connect failed: the server's certificate is not valid for "<host>" (it names …)` | The host in the connection string is not a name on the certificate. Connect by a name it lists, or use `sslmode=verify-ca` with `sslrootcert=FILE` to skip the name check. |
 | `save failed: … conflict …` (GUI, TUI, server: 409) | Someone else saved the same model after you loaded it. Your save was refused, not merged. Reload (**File ▸ Revert to Saved**, `R` in the TUI) and redo the edit. |
 
 Errors are printed on stderr after `error:`. `improv help` lists the

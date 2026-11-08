@@ -174,9 +174,37 @@ extension isn't installed). Input measures bound to a table
 (`improv.binding`) are read from it, and their edited cells are written back
 to that table with `UPDATE`/`INSERT` (values only, no DDL). Unbound cells go
 to `improv.cell`. As with a file store, a save fails with "reload and retry"
-when another writer changed the model after you loaded it. There is no TLS
-in this build, so a non-loopback host needs an explicit `sslmode=disable`
-(use an SSH tunnel to a loopback port instead).
+when another writer changed the model after you loaded it.
+
+To a host off this machine, Improv uses TLS and verifies the server's
+certificate. `sslmode` and `sslrootcert` go in the URL's query (or the
+keyword/value string, for a data source):
+
+```sh
+improv list 'postgres://me@db.example.com/sales?model=plan'                    # TLS, the system's CAs
+improv list 'postgres://me@db.example.com/sales?model=plan&sslrootcert=/etc/improv/ca.pem'
+```
+
+| `sslmode` | Unix socket | loopback | another host |
+| --- | --- | --- | --- |
+| `disable` | cleartext | cleartext | cleartext |
+| `prefer` (the default) | cleartext | cleartext | TLS, certificate and name checked |
+| `require`, `verify-full` | cleartext | TLS, certificate and name checked | TLS, certificate and name checked |
+| `verify-ca` (needs `sslrootcert`) | cleartext | TLS, certificate checked, not the name | TLS, certificate checked, not the name |
+
+- **`require` checks the certificate.** libpq's `require` encrypts and
+  checks nothing; Improv's behaves as `verify-full`. Use `verify-ca` with
+  `sslrootcert` for a certificate that does not name the host.
+- **`prefer` never falls back to cleartext off the host.** A server without
+  TLS is refused before the user name, database or password is sent. Only
+  an explicit `sslmode=disable` sends them in cleartext.
+- **`sslrootcert=FILE`** trusts only the CAs in that PEM file. Without it
+  (or with `sslrootcert=system`), the operating system's CAs.
+- With a password, SCRAM binds the login to the TLS channel when the
+  server offers it (`channel_binding=prefer`; `channel_binding=require`
+  refuses a server that does not).
+- `allow` is not accepted, nor client certificates (`sslcert`, `sslkey`)
+  yet.
 
 ## Security defaults (and how to relax them)
 
@@ -192,7 +220,7 @@ carry code or SQL.
 | Read-only API tokens | none | `IMPROV_API_TOKENS_RO=a,b` |
 | Server limits | 1 MiB body, 30 s request, 64 in flight, 10 s header read, 10k edits per `/eval` | `IMPROV_HEADER_TIMEOUT_MS` |
 | SQL refresh queries | single `SELECT`/`WITH` only, run read-only; DuckDB external access off | none |
-| Postgres transport | loopback/socket only (no TLS built in) | `sslmode=disable` in the connection string to accept cleartext to a remote host |
+| Postgres transport | TLS, certificate verified, to any host off this machine | `sslmode=disable` in the connection string to accept cleartext to a remote host |
 | CSV export of text starting `= + - @ \t \r` | prefixed with `'` (formula-injection safe) | `ExportSpec { neutralize_formulas: false }` (API) |
 | Two processes saving one store | the second save is refused with "reload and retry" (no clobbering) | none |
 

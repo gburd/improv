@@ -7,9 +7,8 @@
 
 use crate::backend::{Backend, Cell, Table};
 use crate::{Result, SqlError};
-use postgres::config::{Host, SslMode};
 use postgres::types::Type;
-use postgres::{Client, Config, NoTls};
+use postgres::Client;
 
 /// Open a Postgres connection from a full libpq/URI connection string.
 ///
@@ -17,53 +16,21 @@ use postgres::{Client, Config, NoTls};
 /// `conn::open`, which pulls the secret from the environment. On failure the
 /// error is redacted so no secret leaks into logs.
 ///
-/// **No TLS is built in.** To keep the password off the wire in cleartext the
-/// connection is refused (fail closed, before any network I/O) unless every
-/// host is loopback or a Unix socket, or the string explicitly says
-/// `sslmode=disable`. `sslmode=require` is refused too, since it cannot be
-/// honoured. Reach a remote server over an SSH tunnel or a local proxy.
+/// The transport is `improv_storage_pg::tls`'s, the same as a `postgres://`
+/// model store's: TLS with the certificate verified off the host (`sslmode`
+/// `prefer`, the default, never falls back to cleartext there), cleartext on
+/// a Unix socket or loopback unless `sslmode` asks for TLS, and cleartext
+/// off the host only with an explicit `sslmode=disable`.
 pub fn connect_postgres(conn_str: &str) -> Result<Backend> {
-    let config: Config = conn_str
-        .parse()
-        .map_err(|_| SqlError::Connect("invalid postgres connection string (redacted)".into()))?;
-    check_pg_transport(&config)?;
-    let client = config
-        .connect(NoTls)
-        .map_err(|e| SqlError::Connect(format!("postgres connect failed: {}", redact_pg(e))))?;
+    use improv_storage_pg::tls::{connect, ConnectError};
+    let client = connect(conn_str).map_err(|e| {
+        SqlError::Connect(match e {
+            ConnectError::Refused(m) => format!("postgres: {m}"),
+            ConnectError::Tls(m) => format!("postgres connect failed: {m}"),
+            ConnectError::Driver(e) => format!("postgres connect failed: {}", redact_pg(e)),
+        })
+    })?;
     Ok(Backend::Postgres(client))
-}
-
-/// Refuse a connection that would send credentials in cleartext off-host, or
-/// that asks for TLS this build cannot provide. See [`connect_postgres`].
-fn check_pg_transport(config: &Config) -> Result<()> {
-    let no_tls = |why: &str| {
-        Err(SqlError::Connect(format!(
-            "postgres: TLS isn't built into this build of Improv; {why}"
-        )))
-    };
-    let mode = config.get_ssl_mode();
-    if mode == SslMode::Require {
-        return no_tls("sslmode=require cannot be honoured (use an SSH tunnel to a loopback port)");
-    }
-    let host_is_local = |h: &Host| match h {
-        Host::Tcp(name) => {
-            name.eq_ignore_ascii_case("localhost")
-                || name
-                    .parse::<std::net::IpAddr>()
-                    .is_ok_and(|ip| ip.is_loopback())
-        }
-        #[cfg(unix)]
-        Host::Unix(_) => true,
-    };
-    let local = config.get_hosts().iter().all(host_is_local)
-        && config.get_hostaddrs().iter().all(|ip| ip.is_loopback());
-    if !local && mode != SslMode::Disable {
-        return no_tls(
-            "refusing a non-loopback host without an explicit sslmode=disable \
-             (the password would cross the network in cleartext)",
-        );
-    }
-    Ok(())
 }
 
 /// Best-effort scrub of a driver error so a password embedded in a connection
@@ -263,43 +230,26 @@ fn redact_str(s: &str) -> String {
 mod tests {
     use super::*;
 
-    fn transport(dsn: &str) -> Result<()> {
-        check_pg_transport(&dsn.parse().unwrap())
-    }
-
+    /// The transport is storage_pg's (its tests hold the decision table);
+    /// here, its refusals come through, before any network I/O.
     #[test]
-    fn transport_allows_loopback_and_sockets() {
-        for ok in [
-            "host=localhost user=u",
-            "host=127.0.0.1 user=u",
-            "host=::1 user=u",
-            "postgresql://u@localhost:5433/db",
-            "host=db.example.com user=u sslmode=disable",
+    fn transport_refusals_come_through() {
+        for (bad, want) in [
+            (
+                "host=db.example.com user=u sslmode=allow",
+                "unsupported sslmode",
+            ),
+            (
+                "host=db.example.com user=u sslmode=verify-ca",
+                "needs sslrootcert",
+            ),
+            ("not a dsn ===", "invalid postgres connection string"),
         ] {
-            assert!(transport(ok).is_ok(), "{ok:?}");
+            let Err(e) = connect_postgres(bad) else {
+                panic!("{bad}: connected");
+            };
+            assert!(e.to_string().contains(want), "{bad:?}: {e}");
         }
-        // A socket directory is a `Host::Unix` only on unix; elsewhere the
-        // driver parses it as a TCP host name, which is not loopback.
-        #[cfg(unix)]
-        assert!(transport("host=/var/run/postgresql user=u").is_ok());
-    }
-
-    #[test]
-    fn transport_refuses_cleartext_remote_and_unhonourable_tls() {
-        for bad in [
-            "host=db.example.com user=u",
-            "host=10.0.0.5 user=u sslmode=prefer",
-            "postgresql://u@db.example.com/db",
-            "host=localhost,db.example.com user=u",
-            "host=localhost hostaddr=10.0.0.5 user=u",
-            "host=localhost user=u sslmode=require",
-        ] {
-            let err = transport(bad).unwrap_err().to_string();
-            assert!(err.contains("TLS isn't built in"), "{bad:?}: {err}");
-        }
-        // Refused before any network I/O, through the public entry point.
-        assert!(connect_postgres("host=db.example.com user=u").is_err());
-        assert!(connect_postgres("not a dsn ===").is_err());
     }
 
     #[test]

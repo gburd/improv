@@ -43,8 +43,9 @@ on `main`) adds access policies, the web GUI, the COSMIC GUI and the
 desktop GUI on FreeBSD and illumos. External functions in Python, R,
 Julia or Pure run under a bubblewrap sandbox on Linux; WebAssembly functions
 run in-process with fuel and memory limits. On other systems they are
-refused unless the operator sets `IMPROV_EXTFN_ALLOW_UNSANDBOXED=1`. The
-Postgres connection has no TLS (use a loopback port or an SSH tunnel). See the
+refused unless the operator sets `IMPROV_EXTFN_ALLOW_UNSANDBOXED=1`.
+Connections to Postgres off the machine use TLS, with the server's
+certificate verified. See the
 [changelog](https://codeberg.org/gregburd/improv/src/branch/main/CHANGELOG.md)
 for what changed in each release.
 

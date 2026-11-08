@@ -13,9 +13,19 @@ improv_core_model = { path = "../core_model" }
 chrono.workspace = true
 # Same sync client (and version) storage_sql already uses.
 postgres = "0.19"
+# TLS (src/tls.rs, shared with storage_sql): the connector postgres 0.19
+# takes, with SCRAM channel binding; the operating system's roots when no
+# sslrootcert is given; percent-decoding for URL parameters.
+rustls.workspace = true
+rustls-platform-verifier = "0.7"
+tokio-postgres-rustls = { version = "0.14", features = ["ring"] }
+percent-encoding = "2"
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+
+[dev-dependencies]
+rcgen.workspace = true
 
 # `cargo llvm-cov` on nightly sets `--cfg coverage_nightly`; test modules are
 # `coverage(off)` so the report measures library code only.

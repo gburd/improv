@@ -332,16 +332,19 @@ handle, for callers that reopen the store per save.
 
 ### Transport
 
-This build has no TLS. `open` refuses:
-
-- `sslmode=require`, which cannot be honoured (use an SSH tunnel to a loopback
-  port);
-- any host that is not `localhost`, a loopback address, or a Unix socket,
-  unless the URL sets `sslmode=disable` explicitly, since the password would
-  cross the network in cleartext.
+`improv_storage_pg::tls` is the transport of every Improv connection to
+Postgres, the model store's and `improv_storage_sql`'s alike. To any host
+that is not `localhost`, a loopback address or a Unix socket it uses TLS
+(rustls), with the server's certificate verified against `sslrootcert=FILE`
+or the operating system's CAs, unless the URL says `sslmode=disable`.
+`prefer`, the default, does not fall back to cleartext there. `require`
+behaves as `verify-full`; `verify-ca` needs `sslrootcert`. The table and the
+details are in [Running Improv](./running.md#open-a-postgres-hosted-model).
 
 A connect error that is not from the database is reported without the
-connection string, so a password in the URL is not echoed.
+connection string, so a password in the URL is not echoed. A TLS error
+names the certificate problem (an unknown CA, the names it is valid for, an
+expiry).
 
 For the extension itself (binding tables, result tables, sync modes) see
 [Improv in Postgres (pg_improv)](./postgres.md).

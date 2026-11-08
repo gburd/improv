@@ -6,6 +6,32 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **TLS to Postgres.** Every Improv connection to Postgres (a
+  `postgres://` model in the CLI, TUI, GUIs and improv-server, and SQL
+  data sources) uses TLS, by rustls, to any host off the machine, and
+  verifies the server's certificate: against `sslrootcert=FILE` when
+  given, else the operating system's CAs. `sslmode` takes `disable`,
+  `prefer` (the default), `require`, `verify-ca` and `verify-full`.
+  `require` checks the certificate and the name, as `verify-full` does,
+  which is stricter than libpq; `verify-ca` (with `sslrootcert`) skips the
+  name. Off the host, `prefer` never falls back to cleartext: a server
+  without TLS is refused before the user name or password is sent. With
+  a password, SCRAM binds to the TLS channel when the server offers it. A
+  certificate error names the problem (an unknown CA, the names the
+  certificate is valid for, an expiry) and never the connection string.
+
+### Changed
+
+- **A Postgres host off the machine now connects, over TLS.** It used to
+  be refused ("TLS isn't built into this build") unless the connection
+  string said `sslmode=disable`; `sslmode=require` was refused
+  everywhere. Both now connect with TLS and a verified certificate.
+  `sslmode=disable` still sends cleartext, as before. A server off the
+  machine without TLS, or whose certificate the system's CAs do not know,
+  is refused: add `sslrootcert=FILE`, or turn on `ssl` in Postgres.
+
 ## [0.13.0] - 2026-11-06
 
 The release that adds access control and new front ends. A model can

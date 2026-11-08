@@ -100,3 +100,10 @@ clap_complete = "4.6.11"
 # and decide the same, until a deliberate bump. No extension types
 # (decimal, ipaddr, datetime): the schema uses none. Apache-2.0.
 cedar-policy = { version = "=4.14.1", default-features = false }
+# TLS, to Postgres (storage_pg) and in improv-server: rustls on the ring
+# provider, which needs no cmake or NASM (aws-lc-rs, rustls' default, does).
+# TLS 1.2 stays on: Postgres' ssl_min_protocol_version defaults to it.
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+# Throwaway CAs and certificates for the TLS tests (dev-dependency only).
+rcgen = "0.14"

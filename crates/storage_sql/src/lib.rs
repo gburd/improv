@@ -10,9 +10,9 @@
 //!   statement ([`check_read_only_sql`]), and every backend runs it read-only
 //!   (Postgres and DuckDB in a `READ ONLY` transaction, DuckDB with external
 //!   access off; SQLite only if the statement is read-only). Data values are
-//!   bound as parameters, never interpolated. Postgres has no TLS in this
-//!   build, so [`connect_postgres`] refuses a non-loopback host unless the
-//!   connection string says `sslmode=disable`.
+//!   bound as parameters, never interpolated. [`connect_postgres`] uses
+//!   TLS, with the server's certificate verified, to any host off this
+//!   machine unless the connection string says `sslmode=disable`.
 //!
 //! Testing Postgres: the live tests skip unless `IMPROV_TEST_PG` holds a
 //! libpq DSN to a scratch database they may create/drop tables in, e.g.

@@ -11,6 +11,8 @@ path = "src/lib.rs"
 [dependencies]
 improv_core_model = { path = "../core_model" }
 improv_data_source = { path = "../data_source" }
+# The Postgres transport (TLS, sslmode), shared with the model store.
+improv_storage_pg = { path = "../storage_pg" }
 thiserror.workspace = true
 serde.workspace = true
 postgres = "0.19"

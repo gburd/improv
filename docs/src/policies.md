@@ -226,6 +226,14 @@ Not covered: the source tables (a role that may read `sales` reads it,
 whatever the model's policies say), and the timing of changes
 (`improv.model_version` and NOTIFY are global).
 
+## On the wire
+
+Policies protect data from users, not from the network. Improv's
+connections to Postgres use TLS and verify the server's certificate
+whenever the server is not local (`sslmode` `prefer`, the default, never
+falls back to cleartext there; see
+[Running Improv](./running.md#open-a-postgres-hosted-model)).
+
 ## Performance
 
 Measured in release builds (rustc 1.98, x86_64 Linux), 100 policies:

@@ -272,6 +272,17 @@ for the mechanism, the wrapper's text, and the full privilege matrix
 (superuser, `improv_admin`, owner, `SET` member, `improv_user`,
 `improv_reader`, writer, `PUBLIC`), which `tests/privileges.sh` checks cell by cell.
 
+## Connecting
+
+Every Improv front end connects to Postgres with TLS, the server's
+certificate verified, unless the server is on the same machine (a Unix
+socket or loopback). Add `sslrootcert=/path/ca.pem` when the server's
+certificate is not signed by a CA the operating system trusts, and
+`sslmode=disable` only for cleartext on a network you trust. The modes are
+in [Running Improv](./running.md#open-a-postgres-hosted-model); `require`
+checks the certificate, which libpq's does not. psql and other libpq
+clients follow libpq's rules, so give them `sslmode=verify-full` too.
+
 ## Access policies
 
 <video src="./img/policies-demo.mp4" controls muted loop playsinline width="100%"

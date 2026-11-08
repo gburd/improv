@@ -25,7 +25,7 @@ fn live(name: &str) -> Option<String> {
 
 fn client() -> Client {
     let dsn = std::env::var("IMPROV_TEST_PG").unwrap();
-    dsn.parse::<Config>().unwrap().connect(NoTls).unwrap()
+    tls::connect(&dsn).map_err(|e| format!("{e:?}")).unwrap()
 }
 
 fn measure(id: u32, name: &str, cats: &[CategoryId], kind: MeasureKind) -> Measure {
@@ -782,21 +782,21 @@ fn url_needs_a_model_and_keeps_other_params() {
 }
 
 #[test]
-fn transport_policy_matches_storage_sql() {
-    for bad in [
-        "postgres://u@db.example.com/x?model=m",
-        "postgres://u@localhost/x?sslmode=require&model=m",
-        "not a url ===?model=m",
+fn open_reports_transport_errors_without_secrets() {
+    for (bad, want) in [
+        (
+            "postgres://u@db.example.com/x?sslmode=allow&model=m",
+            "unsupported sslmode",
+        ),
+        (
+            "postgres://u@db.example.com/x?sslmode=verify-ca&model=m",
+            "needs sslrootcert",
+        ),
+        ("not a url ===?model=m", "invalid"),
     ] {
         let e = PgModelStore::open(bad).err().unwrap().to_string();
-        assert!(e.contains("TLS") || e.contains("invalid"), "{bad}: {e}");
+        assert!(e.contains(want), "{bad}: {e}");
     }
-    let ok: Config = "host=localhost hostaddr=127.0.0.1 user=u".parse().unwrap();
-    assert!(check_transport(&ok).is_ok());
-    let off: Config = "host=db.example.com sslmode=disable user=u"
-        .parse()
-        .unwrap();
-    assert!(check_transport(&off).is_ok());
     // Nothing listens on port 1: a connect error, with no DSN echoed.
     let e = PgModelStore::open("postgres://u:secret@127.0.0.1:1/x?model=m")
         .err()
@@ -1550,4 +1550,183 @@ fn pg_improv_keeps_the_policies() {
     s.client
         .execute("SELECT improv.drop_model($1)", &[&name])
         .unwrap();
+}
+
+/// Live TLS: needs `IMPROV_TEST_PG` and `IMPROV_TEST_PG_TLS`, a keyword/value
+/// DSN to a Postgres with `ssl=on` whose certificate is valid for the DSN's
+/// host and `pg.improv.test`, with `sslrootcert=` naming its CA, e.g.
+/// `host=localhost user=improv password=improv dbname=improv_test
+/// sslrootcert=/tmp/pg/ca.pem`. Returns the DSN without `host`, `hostaddr`,
+/// `sslmode` and `sslrootcert`, the host, its address, and the CA file.
+fn live_tls() -> Option<(String, String, String, String)> {
+    if std::env::var("IMPROV_TEST_PG").is_err() {
+        println!("skipped: IMPROV_TEST_PG not set");
+        return None;
+    }
+    let Ok(dsn) = std::env::var("IMPROV_TEST_PG_TLS") else {
+        println!("skipped: IMPROV_TEST_PG_TLS not set");
+        return None;
+    };
+    assert!(
+        !dsn.starts_with("postgres"),
+        "IMPROV_TEST_PG_TLS must be keyword/value, not a URL"
+    );
+    let (rest, taken) = tls::take_params(&dsn, &["host", "hostaddr", "sslmode", "sslrootcert"])
+        .expect("IMPROV_TEST_PG_TLS parses");
+    let get = |k: &str| {
+        taken
+            .iter()
+            .find(|(key, _)| key == k)
+            .map(|(_, v)| v.clone())
+    };
+    let host = get("host").expect("IMPROV_TEST_PG_TLS has host=");
+    let ca = get("sslrootcert").expect("IMPROV_TEST_PG_TLS has sslrootcert=");
+    let port = rest
+        .parse::<postgres::Config>()
+        .unwrap()
+        .get_ports()
+        .first()
+        .copied()
+        .unwrap_or(5432);
+    let addr = std::net::ToSocketAddrs::to_socket_addrs(&(host.as_str(), port))
+        .unwrap()
+        .next()
+        .unwrap()
+        .ip()
+        .to_string();
+    Some((rest, host, addr, ca))
+}
+
+/// The connection's TLS state, from the server's side.
+fn ssl_in_use(c: &mut Client) -> bool {
+    c.query_one(
+        "SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid()",
+        &[],
+    )
+    .unwrap()
+    .get(0)
+}
+
+fn tls_refusal(conn: &str) -> String {
+    match tls::connect(conn) {
+        Ok(_) => panic!("connected: {conn}"),
+        Err(tls::ConnectError::Tls(m)) => m,
+        Err(tls::ConnectError::Refused(m)) => panic!("refused before connecting: {m}"),
+        Err(tls::ConnectError::Driver(e)) => panic!("not a TLS error: {e}"),
+    }
+}
+
+#[test]
+fn live_tls_verify_full_and_sslrootcert() {
+    let Some((dsn, host, addr, ca)) = live_tls() else {
+        return;
+    };
+    // sslrootcert trusts that CA; verify-full checks it and the name. SCRAM
+    // must bind to the channel (channel_binding=require fails otherwise).
+    for mode in ["verify-full", "require"] {
+        let mut c = tls::connect(&format!(
+            "{dsn} host={host} sslmode={mode} sslrootcert={ca} channel_binding=require"
+        ))
+        .map_err(|e| format!("{e:?}"))
+        .unwrap();
+        assert!(ssl_in_use(&mut c), "{mode}");
+    }
+    // verify-ca: any name, as long as the CA signed it.
+    let mut c = tls::connect(&format!(
+        "{dsn} host=wrong.improv.test hostaddr={addr} sslmode=verify-ca sslrootcert={ca}"
+    ))
+    .map_err(|e| format!("{e:?}"))
+    .unwrap();
+    assert!(ssl_in_use(&mut c));
+    // The model store, through a URL with sslrootcert in its query.
+    let name = format!("t_tls_{}", std::process::id());
+    let url = format!(
+        "postgres://{}?model={name}&sslmode=verify-full&sslrootcert={ca}",
+        dsn_as_url_authority(&dsn, &host)
+    );
+    let mut s = PgModelStore::open(&url).unwrap();
+    s.save_model(&sample()).unwrap();
+    assert_eq!(s.load_model().unwrap(), sample());
+    assert!(ssl_in_use(&mut s.client));
+    s.client
+        .execute("DELETE FROM improv.model WHERE name = $1", &[&name])
+        .unwrap();
+}
+
+/// `user[:password]@host:port/dbname` of a keyword/value DSN, for a URL.
+fn dsn_as_url_authority(dsn: &str, host: &str) -> String {
+    let c: postgres::Config = dsn.parse().unwrap();
+    let enc = |b: &[u8]| {
+        percent_encoding::percent_encode(b, percent_encoding::NON_ALPHANUMERIC).to_string()
+    };
+    let user = enc(c.get_user().unwrap_or("postgres").as_bytes());
+    let pw = c
+        .get_password()
+        .map(|p| format!(":{}", enc(p)))
+        .unwrap_or_default();
+    let port = c.get_ports().first().copied().unwrap_or(5432);
+    let db = c
+        .get_dbname()
+        .map(|d| enc(d.as_bytes()))
+        .unwrap_or_default();
+    format!("{user}{pw}@{host}:{port}/{db}")
+}
+
+#[test]
+fn live_tls_wrong_hostname_and_unknown_ca_are_refused() {
+    let Some((dsn, host, addr, ca)) = live_tls() else {
+        return;
+    };
+    let e = tls_refusal(&format!(
+        "{dsn} host=wrong.improv.test hostaddr={addr} sslmode=verify-full sslrootcert={ca}"
+    ));
+    assert!(e.contains("is not valid for \"wrong.improv.test\""), "{e}");
+    // A CA the server's certificate is not signed by (prefer: off the host).
+    let other = tls::tests::Pki::new(&[&host]).ca_file("live-other");
+    for (h, mode) in [
+        (host.as_str(), "verify-full"),
+        (host.as_str(), "verify-ca"),
+        (host.as_str(), "require"),
+        ("pg.improv.test", "prefer"),
+    ] {
+        let e = tls_refusal(&format!(
+            "{dsn} host={h} hostaddr={addr} sslmode={mode} sslrootcert={}",
+            other.display()
+        ));
+        assert!(
+            e.contains("not signed by a CA Improv trusts"),
+            "{mode}: {e}"
+        );
+        for (_, secret) in tls::take_params(&dsn, &["password"]).unwrap().1 {
+            assert!(!e.contains(&secret), "{e}");
+        }
+    }
+    std::fs::remove_file(other).ok();
+}
+
+/// Off the host (here by name: `pg.improv.test` at the server's address),
+/// `prefer` takes TLS though cleartext would be accepted, and verifies it;
+/// on loopback, `prefer` stays cleartext, as libpq's does.
+#[test]
+fn live_tls_prefer_off_the_host_uses_tls() {
+    let Some((dsn, _host, addr, ca)) = live_tls() else {
+        return;
+    };
+    let mut c = tls::connect(&format!(
+        "{dsn} host=pg.improv.test hostaddr={addr} sslrootcert={ca}"
+    ))
+    .map_err(|e| format!("{e:?}"))
+    .unwrap();
+    assert!(ssl_in_use(&mut c), "prefer off the host sent cleartext");
+    if addr.parse::<std::net::IpAddr>().unwrap().is_loopback() {
+        let mut c = tls::connect(&format!("{dsn} host={addr} sslmode=prefer"))
+            .map_err(|e| format!("{e:?}"))
+            .unwrap();
+        assert!(!ssl_in_use(&mut c));
+    }
+    // An off-host name the certificate does not name: refused, not cleartext.
+    let e = tls_refusal(&format!(
+        "{dsn} host=wrong.improv.test hostaddr={addr} sslmode=prefer sslrootcert={ca}"
+    ));
+    assert!(e.contains("not valid for"), "{e}");
 }

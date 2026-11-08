@@ -201,11 +201,17 @@ mod tests {
     }
 
     /// The password is appended from the env var only when it is non-empty;
-    /// either way a remote cleartext host is refused before any network I/O.
+    /// either way a refusal (here verify-ca without a CA file) comes before
+    /// any network I/O and does not echo it.
     #[test]
     fn open_postgres_resolves_password_env() {
         let var = format!("IMPROV_CONN_TEST_PW_{}", std::process::id());
-        let remote = postgres("p", "remote", "host=db.example.com user=u", &var);
+        let remote = postgres(
+            "p",
+            "remote",
+            "host=db.example.com user=u sslmode=verify-ca",
+            &var,
+        );
         std::env::set_var(&var, "s3cret");
         let with_pw = open(&remote).err().expect("refused").to_string();
         std::env::set_var(&var, "");
@@ -213,7 +219,7 @@ mod tests {
         std::env::remove_var(&var);
         let unset = open(&remote).err().expect("refused").to_string();
         for e in [&with_pw, &empty_pw, &unset] {
-            assert!(e.contains("TLS isn't built in"), "{e}");
+            assert!(e.contains("needs sslrootcert"), "{e}");
             assert!(!e.contains("s3cret"), "{e}");
         }
     }
