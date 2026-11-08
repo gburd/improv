@@ -241,10 +241,15 @@ for from in "$@"; do
 	          'cell_rule','row_visible','cell_name','item_changed','result_written')")" \
 		15 "the policy functions after the update"
 	eq "$(q "SELECT count(*) FROM improv.stale")" "$(q "SELECT count(*) FROM improv.model")" "every model has a stale row after the update"
-	# (The worker's rebuild of the logical model is a full recompute, which
-	# may already have vouched for its rows.)
-	eq "$(q "SELECT count(*) FROM improv.stale s JOIN improv.model m ON m.id = s.model_id
-	         WHERE m.sync_mode <> 'logical' AND s.gen = s.clean_gen")" 0 "and no other is clean before a recalc"
+	# From before 0.13.0 the update makes improv.stale, and no model's rows
+	# are vouched for until it recomputes. (The worker's rebuild of the
+	# logical model is a full recompute, which may already have vouched for
+	# its rows.) From 0.13.0 on, the flags are the old release's own, and a
+	# model it vouched for stays clean: the update rewrites no result row.
+	if older "$fv" 0.13.0; then
+		eq "$(q "SELECT count(*) FROM improv.stale s JOIN improv.model m ON m.id = s.model_id
+		         WHERE m.sync_mode <> 'logical' AND s.gen = s.clean_gen")" 0 "and no other is clean before a recalc"
+	fi
 	# 0.11.0: each model acts as its owner, its result schema's owner before.
 	want=plan:alice:logical
 	for m in $(modes "$fv" | LC_ALL=C sort); do want="$want,plan_$m:improv:$m"; done
