@@ -471,13 +471,12 @@ async fn main() {
         .unwrap_or_else(|e| panic!("bind {addr}: {e}"));
     let local = listener.local_addr().expect("bound socket has an address");
     // clap makes --tls-cert and --tls-key come together.
-    let tls = match tls_cert.zip(tls_key) {
-        Some((cert, key)) => Some(tls_acceptor(&cert, &key).unwrap_or_else(|e| {
+    let tls = tls_cert.zip(tls_key).map(|(cert, key)| {
+        tls_acceptor(&cert, &key).unwrap_or_else(|e| {
             eprintln!("improv-server: {e}");
             std::process::exit(2);
-        })),
-        None => None,
-    };
+        })
+    });
     let (allow_open, allow_plain) = (get("IMPROV_ALLOW_OPEN"), get("IMPROV_ALLOW_PLAIN"));
     if let Err(e) = startup_check(
         local,

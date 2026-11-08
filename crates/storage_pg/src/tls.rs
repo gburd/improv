@@ -595,8 +595,6 @@ pub(crate) mod tests {
     /// A CA and a server certificate for `names`, signed by it.
     pub(crate) struct Pki {
         pub ca_pem: String,
-        pub cert_pem: String,
-        pub key_pem: String,
         cert: CertificateDer<'static>,
         key: rustls::pki_types::PrivateKeyDer<'static>,
     }
@@ -626,8 +624,6 @@ pub(crate) mod tests {
             let cert = leaf.signed_by(&key, &ca).unwrap();
             Pki {
                 ca_pem: ca.pem(),
-                cert_pem: cert.pem(),
-                key_pem: key.serialize_pem(),
                 cert: cert.der().clone(),
                 key: rustls::pki_types::PrivatePkcs8KeyDer::from(key.serialize_der()).into(),
             }
