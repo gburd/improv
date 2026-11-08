@@ -1712,6 +1712,10 @@ fn owner_reads(
     let Some(owner) = owner else {
         return Ok(false);
     };
+    // SAFETY: in the worker's transaction. A GRANT or REVOKE committed since
+    // it began is applied to the catalog cache first: else the check passes
+    // on the old grant, and the load or apply meets the new one.
+    unsafe { pg_sys::AcceptInvalidationMessages() };
     let (denied, bound) = Spi::connect(|c| -> Res<_> {
         let t = c.select(
             "SELECT string_agg(DISTINCT format('%s.%I', b.rel, k.col), ', ') \

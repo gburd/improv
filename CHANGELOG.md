@@ -45,6 +45,15 @@ this project follows [Semantic Versioning](https://semver.org/).
   machine without TLS, or whose certificate the system's CAs do not know,
   is refused: add `sslrootcert=FILE`, or turn on `ssl` in Postgres.
 
+### Fixed
+
+- **pg_improv: a REVOKE from a model's owner now gives the clear error in
+  logical mode, every time.** The sync worker checked the owner's
+  privileges against a catalog cache that could predate the REVOKE, so
+  the check passed, and the read failed with a bare "permission denied
+  for table ..." instead of naming the owner and the columns. The check
+  now applies other sessions' committed catalog changes first.
+
 ## [0.13.0] - 2026-11-06
 
 The release that adds access control and new front ends. A model can
