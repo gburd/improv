@@ -31,7 +31,7 @@ stages 1-4 in 0.13).
   storage_pg/store `load_policies`/`save_policies`/`policy_version` call
   them. `tests/policies.sh` in `ci/pg_improv.sh`. Measured numbers are in
   the design note's Performance section.
-- **Stage 4 DONE** (`work/tls`, for 0.14): `improv_storage_pg::tls`, the
+- **Stage 4 DONE** (on main, `7e13c5e`..`569a933`, for 0.14): `improv_storage_pg::tls`, the
   one Postgres transport (storage_pg and storage_sql): rustls/ring,
   `tokio-postgres-rustls`, `rustls-platform-verifier`; sslmode disable/
   prefer/require/verify-ca/verify-full and sslrootcert parsed by Improv;
