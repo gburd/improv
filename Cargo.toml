@@ -91,6 +91,10 @@ eframe = { version = "=0.37.0", default-features = false, features = [
 # Its emoji fonts hold the glyphs Arimo lacks (the error marker ⚠).
 egui = { version = "=0.37.0", features = ["monochrome_emoji_fonts"] }
 egui_extras = "=0.37.0"
+# egui 0.37's accessibility tree types, for the web GUI's DOM bridge
+# (crates/gui_web/src/a11y.rs). The same version egui resolves to, so the
+# types are egui's own. MIT OR Apache-2.0.
+accesskit = "=0.25.2"
 # Command-line parsing for the four binaries, and the man pages and shell
 # completions generated from the same definitions (G1-G3).
 clap = { version = "4.6.7", features = ["derive", "env"] }

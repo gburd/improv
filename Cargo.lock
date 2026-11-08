@@ -3186,6 +3186,7 @@ dependencies = [
 name = "improv_gui_web"
 version = "0.14.0"
 dependencies = [
+ "accesskit",
  "eframe",
  "egui",
  "improv_client",

@@ -10,6 +10,7 @@ description = "The Improv GUI in a browser: egui over improv-server's /v1 API."
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+accesskit.workspace = true
 improv_client = { path = "../client" }
 improv_core_model = { path = "../core_model" }
 serde.workspace = true

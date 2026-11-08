@@ -8,9 +8,11 @@
 //! (they name each other as `crate::theme`, so they sit at the root), and
 //! `improv_client`'s autocomplete and located errors.
 //!
-//! Off wasm32 the crate is its pure layout code alone, so the workspace
-//! builds and tests it on every platform.
+//! Off wasm32 the crate is its pure parts alone (the grid layout and the
+//! accessibility tree's DOM model), so the workspace builds and tests them
+//! on every platform.
 
+pub mod a11y;
 pub mod layout;
 
 #[cfg(target_arch = "wasm32")]
