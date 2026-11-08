@@ -185,7 +185,8 @@ jobs:
   # Coverage gate: every crate >= 90% functions AND >= 90% branches (inline
   # test modules excluded; see CONTRIBUTING.md "Coverage"). Branch coverage
   # needs nightly; bubblewrap + python3 so the sandboxed extfn paths run, and
-  # a Postgres service so storage_sql/pg.rs runs live.
+  # a Postgres service so storage_sql/pg.rs runs live, with ssl=on (a CA and
+  # certificate made here) so the TLS tests (IMPROV_TEST_PG_TLS) run too.
   coverage:
     name: Coverage (>= 90% fn and branch per crate)
     runs-on: ubuntu-latest
@@ -204,6 +205,7 @@ jobs:
           --health-timeout 5s --health-retries 10
     env:
       IMPROV_TEST_PG: "host=127.0.0.1 user=improv password=improv dbname=improv_test"
+      IMPROV_TEST_PG_TLS: "host=localhost user=improv password=improv dbname=improv_test sslrootcert=/tmp/pg-tls/ca.pem"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -224,6 +226,34 @@ jobs:
         run: |
           sudo apt-get update && sudo apt-get install -y bubblewrap python3
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      # TLS for the service: a throwaway CA and a certificate for localhost,
+      # 127.0.0.1 and pg.improv.test (the name the tests reach it by), then
+      # ssl=on and a reload. The service was started before this step, so
+      # the files are copied in rather than mounted.
+      - name: Postgres with ssl=on
+        env:
+          PG: ${{ job.services.postgres.id }}
+        run: |
+          set -euo pipefail
+          d=/tmp/pg-tls && mkdir -p "$d" && cd "$d"
+          openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 2 \
+            -subj "/CN=Improv CI CA" -keyout ca.key -out ca.pem
+          openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -subj "/CN=localhost" \
+            -keyout server.key -out server.csr
+          printf 'subjectAltName=DNS:pg.improv.test,DNS:localhost,IP:127.0.0.1\nbasicConstraints=CA:FALSE\nextendedKeyUsage=serverAuth\n' >ext.cnf
+          openssl x509 -req -in server.csr -CA ca.pem -CAkey ca.key -CAcreateserial -days 2 \
+            -extfile ext.cnf -out server.pem
+          docker cp server.pem "$PG":/var/lib/postgresql/server.crt
+          docker cp server.key "$PG":/var/lib/postgresql/server.key
+          docker exec "$PG" sh -c 'chown postgres /var/lib/postgresql/server.* && chmod 600 /var/lib/postgresql/server.key'
+          docker exec -u postgres "$PG" psql -U improv -d improv_test -v ON_ERROR_STOP=1 \
+            -c "ALTER SYSTEM SET ssl_cert_file = '/var/lib/postgresql/server.crt'" \
+            -c "ALTER SYSTEM SET ssl_key_file = '/var/lib/postgresql/server.key'" \
+            -c "ALTER SYSTEM SET ssl = on" -c "SELECT pg_reload_conf()"
+          sleep 1
+          docker exec -u postgres "$PG" psql -U improv -d improv_test -Atc "SHOW ssl" | grep -qx on
+          PGPASSWORD=improv psql "host=localhost user=improv dbname=improv_test sslmode=verify-full sslrootcert=$d/ca.pem" \
+            -Atc "SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid()" | grep -qx t
       - uses: dtolnay/rust-toolchain@nightly
         with:
           components: llvm-tools-preview

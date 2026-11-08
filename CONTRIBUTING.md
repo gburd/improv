@@ -103,6 +103,14 @@ Set `IMPROV_TEST_PG` to include the live Postgres tests, and install
 `python3` + `bubblewrap` for the sandboxed external-function tests (they
 skip, not fail, without them). CI runs the same gate.
 
+The live TLS tests (storage_pg) also need `IMPROV_TEST_PG_TLS`: a
+keyword/value DSN to a Postgres with `ssl=on`, whose certificate names its
+`host` and `pg.improv.test`, with `sslrootcert=` naming the CA, e.g.
+`host=localhost user=improv password=improv dbname=improv_test
+sslrootcert=/tmp/pg-tls/ca.pem`. The coverage job's "Postgres with ssl=on"
+step makes the CA and certificate with `openssl` and turns `ssl` on in its
+service; run the same commands for a local server.
+
 ## GUI screenshot golden
 
 CI's `gui-shot` job runs `scripts/gui-shot-check.sh`: it renders the demo

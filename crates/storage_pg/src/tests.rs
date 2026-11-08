@@ -1588,10 +1588,14 @@ fn live_tls() -> Option<(String, String, String, String)> {
         .first()
         .copied()
         .unwrap_or(5432);
+    // The first address that answers: `localhost` may resolve to ::1 first
+    // where the server listens on 127.0.0.1 only.
     let addr = std::net::ToSocketAddrs::to_socket_addrs(&(host.as_str(), port))
         .unwrap()
-        .next()
-        .unwrap()
+        .find(|a| {
+            std::net::TcpStream::connect_timeout(a, std::time::Duration::from_secs(5)).is_ok()
+        })
+        .expect("IMPROV_TEST_PG_TLS's host answers")
         .ip()
         .to_string();
     Some((rest, host, addr, ca))
