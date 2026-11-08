@@ -169,7 +169,9 @@ A JSON HTTP API built on **axum** + **tokio**, over a model store.
 - **Bearer-token authentication**: read-write `IMPROV_API_TOKEN`/`IMPROV_API_TOKENS`,
   read-only `IMPROV_API_TOKENS_RO`, compared in constant time. `/health` stays
   public. Open mode (no tokens) refuses a non-loopback bind unless
-  `IMPROV_ALLOW_OPEN=1`.
+  `IMPROV_ALLOW_OPEN=1`; tokens on a non-loopback bind need TLS
+  (`--tls-cert`/`--tls-key`: rustls on ring, `tokio-rustls`, HTTP/1.1 over
+  ALPN, handshake under the header timeout) or `IMPROV_ALLOW_PLAIN=1`.
 - Limits: hyper HTTP/1 accept loop with a 10 s header-read timeout
   (`IMPROV_HEADER_TIMEOUT_MS`; `axum::serve` 0.7 has none), a 30 s
   `tower` timeout, a global 64-request concurrency limit, 1 MiB bodies, and

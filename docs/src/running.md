@@ -217,6 +217,7 @@ carry code or SQL.
 | No bubblewrap installed | **refuse** to run external functions | `IMPROV_EXTFN_ALLOW_UNSANDBOXED=1` (rlimits only; not on macOS, which refuses one of the ceilings, so there use `IMPROV_EXTFN_TRUSTED=1`) |
 | Server's refresh scheduler | **off** | `IMPROV_SCHEDULER=1` plus `IMPROV_EXTFN_ALLOW=<file>` listing `sha256(name\0body)` digests |
 | Server with no token on a non-loopback address | **refuses to start** | `IMPROV_ALLOW_OPEN=1` |
+| Server with tokens on a non-loopback address, without `--tls-cert` | **refuses to start** (tokens would cross the network in cleartext) | `IMPROV_ALLOW_PLAIN=1` |
 | Read-only API tokens | none | `IMPROV_API_TOKENS_RO=a,b` |
 | Server limits | 1 MiB body, 30 s request, 64 in flight, 10 s header read, 10k edits per `/eval` | `IMPROV_HEADER_TIMEOUT_MS` |
 | SQL refresh queries | single `SELECT`/`WITH` only, run read-only; DuckDB external access off | none |

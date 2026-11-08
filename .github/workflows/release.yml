@@ -322,8 +322,10 @@ jobs:
   # The container image (Containerfile): improv-server and the improv CLI on
   # Debian trixie-slim, pushed to ghcr.io/gburd/improv as :X.Y.Z and :latest
   # (amd64). podman is on the runner; the push uses the job's GITHUB_TOKEN.
-  # Before the push, the image must refuse to start without a token and
-  # answer /health with one.
+  # Before the push, the image must refuse to start without a token, refuse
+  # a token over plain HTTP (naming --tls-cert/--tls-key and
+  # IMPROV_ALLOW_PLAIN=1), answer /health with IMPROV_ALLOW_PLAIN=1, and
+  # with a mounted certificate answer HTTPS and not plain HTTP.
   container:
     name: Container image (ghcr.io/gburd/improv)
     needs: [qualify]
@@ -356,10 +358,41 @@ jobs:
             echo "the image started without a token" >&2; exit 1
           fi
           grep -q "refusing to serve 0.0.0.0:3000 without auth" err.txt
-          podman run -d --name t -p 3000:3000 -e IMPROV_API_TOKEN=ci "$img:$ver" >/dev/null
+          # A token over plain HTTP: refused, naming both ways out.
+          if podman run --rm -e IMPROV_API_TOKEN=ci "$img:$ver" 2>err.txt; then
+            echo "the image served a token over plain HTTP" >&2; exit 1
+          fi
+          grep -q "refusing to serve 0.0.0.0:3000 over plain HTTP" err.txt
+          grep -q -- "--tls-cert and --tls-key" err.txt
+          grep -q "IMPROV_ALLOW_PLAIN=1" err.txt
+          # Plain HTTP, opted in (a host-side proxy would keep it off the network).
+          podman run -d --rm --name t -p 127.0.0.1:3000:3000 -e IMPROV_API_TOKEN=ci \
+            -e IMPROV_ALLOW_PLAIN=1 "$img:$ver" >/dev/null
           for _ in $(seq 50); do curl -sf 127.0.0.1:3000/health >/dev/null && break; sleep 0.2; done
           curl -sf 127.0.0.1:3000/health >/dev/null
           test "$(curl -s -o /dev/null -w '%{http_code}' 127.0.0.1:3000/v1/measures)" = 401
+          podman stop -t 5 t >/dev/null
+          # TLS: a throwaway CA and a certificate for 127.0.0.1, mounted.
+          tls=$(mktemp -d)
+          openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 1 \
+            -subj "/CN=improv CI CA" -keyout "$tls/ca.key" -out "$tls/ca.pem" 2>/dev/null
+          openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -subj "/CN=127.0.0.1" \
+            -keyout "$tls/key.pem" -out "$tls/csr.pem" 2>/dev/null
+          printf 'subjectAltName=IP:127.0.0.1\nbasicConstraints=CA:FALSE\n' >"$tls/ext.cnf"
+          openssl x509 -req -in "$tls/csr.pem" -CA "$tls/ca.pem" -CAkey "$tls/ca.key" \
+            -CAcreateserial -days 1 -extfile "$tls/ext.cnf" -out "$tls/cert.pem" 2>/dev/null
+          chmod 755 "$tls" && chmod 644 "$tls"/*.pem   # uid 10001 reads them
+          podman run -d --rm --name t -p 127.0.0.1:3443:3000 -e IMPROV_API_TOKEN=ci -v "$tls:/tls:ro" \
+            "$img:$ver" /data/improv.db --tls-cert /tls/cert.pem --tls-key /tls/key.pem >/dev/null
+          for _ in $(seq 50); do
+            curl -sf --cacert "$tls/ca.pem" https://127.0.0.1:3443/health >/dev/null && break; sleep 0.2
+          done
+          curl -sf --cacert "$tls/ca.pem" https://127.0.0.1:3443/health >/dev/null
+          test "$(curl -s --cacert "$tls/ca.pem" -o /dev/null -w '%{http_code}' \
+            https://127.0.0.1:3443/v1/measures)" = 401
+          if curl -s --max-time 5 http://127.0.0.1:3443/health >/dev/null; then
+            echo "the TLS listener answered plain HTTP" >&2; exit 1
+          fi
           podman stop -t 5 t >/dev/null
           [ "$GITHUB_REF_TYPE" = tag ] || { echo "not a tag: built and checked, not pushed"; exit 0; }
           echo "$GHCR_TOKEN" | podman login ghcr.io -u "$ACTOR" --password-stdin

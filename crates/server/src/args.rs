@@ -27,4 +27,11 @@ pub struct Cli {
     /// the API; off by default
     #[arg(long = "static", value_name = "DIR")]
     pub static_dir: Option<std::path::PathBuf>,
+    /// Serve HTTPS with this certificate chain (PEM, the server's
+    /// certificate first); needs --tls-key
+    #[arg(long, value_name = "FILE", requires = "tls_key")]
+    pub tls_cert: Option<std::path::PathBuf>,
+    /// The private key of --tls-cert (PEM: PKCS#8, PKCS#1 or SEC1)
+    #[arg(long, value_name = "FILE", requires = "tls_cert")]
+    pub tls_key: Option<std::path::PathBuf>,
 }

@@ -23,13 +23,21 @@ _improv__server() {
 
     case "${cmd}" in
         improv__server)
-            opts="-h -V --static --help --version"
+            opts="-h -V --static --tls-cert --tls-key --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 1 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
             fi
             case "${prev}" in
                 --static)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --tls-cert)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --tls-key)
                     COMPREPLY=($(compgen -f "${cur}"))
                     return 0
                     ;;

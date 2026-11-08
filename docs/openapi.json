@@ -3,7 +3,7 @@
   "info": {
     "title": "improv-server",
     "version": "1",
-    "description": "JSON HTTP API over one Improv model. Every path is also served without the /v1 prefix (an alias kept for older clients). `x-improv-scope` names the token scope a route needs: public (no token), read, or write. A missing or unknown token gets 401, a read token on a write route 403, an over-limit body 413, a caller over its rate limit 429.",
+    "description": "JSON HTTP API over one Improv model. Every path is also served without the /v1 prefix (an alias kept for older clients). `x-improv-scope` names the token scope a route needs: public (no token), read, or write. A missing or unknown token gets 401, a read token on a write route 403, an over-limit body 413, a caller over its rate limit 429. With --tls-cert and --tls-key the server speaks HTTPS only; off loopback, a server with tokens refuses to start without TLS unless IMPROV_ALLOW_PLAIN=1.",
     "license": { "name": "Apache-2.0 OR MIT" }
   },
   "security": [{ "bearer": [] }],

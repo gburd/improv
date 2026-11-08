@@ -27,11 +27,15 @@ tower = { workspace = true, features = ["limit", "timeout", "util"] }
 hyper = { version = "1", features = ["http1", "server"] }
 hyper-util = { version = "0.1", features = ["http1", "server", "service", "tokio"] }
 sha2 = "0.11"
+# HTTPS with --tls-cert/--tls-key: rustls on the ring provider.
+rustls.workspace = true
+tokio-rustls.workspace = true
 chrono.workspace = true
 
 [dev-dependencies]
 improv_extfn = { path = "../extfn" }
 tokio = { workspace = true, features = ["io-util", "test-util"] }
+rcgen.workspace = true
 
 # `cargo llvm-cov` on nightly sets `--cfg coverage_nightly`; test modules are
 # `coverage(off)` so the report measures library code only.

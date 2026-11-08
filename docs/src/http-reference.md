@@ -2,13 +2,13 @@
 
 <!-- Generated from docs/openapi.json by `UPDATE_DOCS=1 cargo test -p improv_cli`. Do not edit. -->
 
-JSON HTTP API over one Improv model. Every path is also served without the /v1 prefix (an alias kept for older clients). `x-improv-scope` names the token scope a route needs: public (no token), read, or write. A missing or unknown token gets 401, a read token on a write route 403, an over-limit body 413, a caller over its rate limit 429.
+JSON HTTP API over one Improv model. Every path is also served without the /v1 prefix (an alias kept for older clients). `x-improv-scope` names the token scope a route needs: public (no token), read, or write. A missing or unknown token gets 401, a read token on a write route 403, an over-limit body 413, a caller over its rate limit 429. With --tls-cert and --tls-key the server speaks HTTPS only; off loopback, a server with tokens refuses to start without TLS unless IMPROV_ALLOW_PLAIN=1.
 
 The server serves this document at `/v1/openapi.json`. Point any
 OpenAPI viewer at that URL, or at
 [`docs/openapi.json`](https://codeberg.org/gregburd/improv/src/branch/main/docs/openapi.json), for an interactive
-page. [The HTTP Server](./server.md) covers running, tokens and
-limits.
+page. [The HTTP Server](./server.md) covers running, tokens,
+TLS and limits.
 
 | Method | Path | Scope | Summary |
 | --- | --- | --- | --- |

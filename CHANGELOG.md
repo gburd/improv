@@ -21,8 +21,21 @@ this project follows [Semantic Versioning](https://semver.org/).
   a password, SCRAM binds to the TLS channel when the server offers it. A
   certificate error names the problem (an unknown CA, the names the
   certificate is valid for, an expiry) and never the connection string.
+- **HTTPS in improv-server.** `--tls-cert FILE --tls-key FILE` (PEM)
+  serves every connection over TLS 1.2 or 1.3 (rustls), HTTP/1.1 over
+  ALPN; a plain-HTTP client is dropped, and the handshake gets the header
+  read timeout. The server logs `listening on <addr> (TLS)`.
 
 ### Changed
+
+- **Breaking, for containers that publish the port and send tokens over
+  plain HTTP.** improv-server with tokens, on an address that is not
+  loopback and without `--tls-cert`, now refuses to start, so a bearer
+  token never crosses a network in cleartext unless someone opts in. The
+  image binds `0.0.0.0` inside the container, so it is affected even
+  behind `-p 127.0.0.1:3000:3000`. Fix: add `-e IMPROV_ALLOW_PLAIN=1`
+  when the host or a proxy keeps the port off the network, or mount a
+  certificate and pass `--tls-cert /tls/cert.pem --tls-key /tls/key.pem`.
 
 - **A Postgres host off the machine now connects, over TLS.** It used to
   be refused ("TLS isn't built into this build") unless the connection

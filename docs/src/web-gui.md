@@ -27,9 +27,9 @@ IMPROV_API_TOKEN_FILE=/etc/improv/tokens improv-server sales.db 127.0.0.1:3000 -
 ```
 
 Open `http://127.0.0.1:3000/`. The page and the API share one origin, so
-no CORS is needed. For anything past your own machine, put TLS in front
-(a proxy, as [The HTTP Server](./server.md#deployment) shows): the token
-travels on every request.
+no CORS is needed. For anything past your own machine, use TLS: the token
+travels on every request. Give the server `--tls-cert` and `--tls-key`, or
+put a proxy in front ([The HTTP Server](./server.md#tls)).
 
 ## Log in
 

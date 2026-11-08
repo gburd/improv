@@ -278,9 +278,10 @@ that has `USAGE` on schema `improv`, `SELECT` on its tables, and
 
 | Line | Meaning |
 | --- | --- |
-| `improv-server listening on <addr>` | started |
+| `improv-server listening on <addr>` | started (plain HTTP) |
+| `improv-server listening on <addr> (TLS)` | started, HTTPS (`--tls-cert`) |
 | `auth disabled: set IMPROV_API_TOKEN to require a bearer token` | open mode (loopback, or `IMPROV_ALLOW_OPEN=1`) |
-| `improv-server: <error>` | startup failed (bad address, refused open mode); it exits |
+| `improv-server: <error>` | startup failed (bad address, refused open mode, tokens over plain HTTP off loopback, an unreadable certificate or key); it exits |
 | `accept: <error>` | a connection could not be accepted (often file descriptors exhausted) |
 | `request <id>: internal error: <detail>` | a 500; the client got `{"error": "internal error", "request_id": <id>}` with the same id |
 | `scheduler disabled (set IMPROV_SCHEDULER=1 to enable)` | the default |

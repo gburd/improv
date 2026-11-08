@@ -468,3 +468,5 @@ Usage: improv-server [OPTIONS] [model] [addr]
 | `<model>` | The model: a store file, or postgres://USER@HOST/DB?model=NAME (default: `improv.db`) |
 | `<addr>` | The address to listen on (default: `127.0.0.1:3000`) (env: `IMPROV_ADDR`) |
 | `--static` `<DIR>` | Also serve the files in DIR (a web front end's build) at /, beside the API; off by default |
+| `--tls-cert` `<FILE>` | Serve HTTPS with this certificate chain (PEM, the server's certificate first); needs --tls-key |
+| `--tls-key` `<FILE>` | The private key of --tls-cert (PEM: PKCS#8, PKCS#1 or SEC1) |

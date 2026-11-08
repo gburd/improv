@@ -554,8 +554,8 @@ fn http_reference() -> String {
          The server serves this document at `/v1/openapi.json`. Point any\n\
          OpenAPI viewer at that URL, or at\n\
          [`docs/openapi.json`]({REPO}/docs/openapi.json), for an interactive\n\
-         page. [The HTTP Server](./server.md) covers running, tokens and\n\
-         limits.\n\n\
+         page. [The HTTP Server](./server.md) covers running, tokens,\n\
+         TLS and limits.\n\n\
          | Method | Path | Scope | Summary |\n| --- | --- | --- | --- |\n",
         text(&doc["info"]["description"]),
     );

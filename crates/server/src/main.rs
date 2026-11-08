@@ -454,6 +454,8 @@ async fn main() {
         model: db_path,
         addr,
         static_dir,
+        tls_cert,
+        tls_key,
     } = <args::Cli as clap::Parser>::parse();
 
     let get = |k: &str| std::env::var(k).ok();
@@ -468,8 +470,22 @@ async fn main() {
         .await
         .unwrap_or_else(|e| panic!("bind {addr}: {e}"));
     let local = listener.local_addr().expect("bound socket has an address");
-    let allow_open = std::env::var("IMPROV_ALLOW_OPEN").ok();
-    if let Err(e) = startup_check(local, &auth, allow_open.as_deref()) {
+    // clap makes --tls-cert and --tls-key come together.
+    let tls = match tls_cert.zip(tls_key) {
+        Some((cert, key)) => Some(tls_acceptor(&cert, &key).unwrap_or_else(|e| {
+            eprintln!("improv-server: {e}");
+            std::process::exit(2);
+        })),
+        None => None,
+    };
+    let (allow_open, allow_plain) = (get("IMPROV_ALLOW_OPEN"), get("IMPROV_ALLOW_PLAIN"));
+    if let Err(e) = startup_check(
+        local,
+        &auth,
+        tls.is_some(),
+        allow_open.as_deref(),
+        allow_plain.as_deref(),
+    ) {
         eprintln!("improv-server: {e}");
         std::process::exit(2);
     }
@@ -522,7 +538,8 @@ async fn main() {
 
     // Before "listening": a supervisor may signal as soon as it sees it.
     let stop = shutdown_signal();
-    eprintln!("improv-server listening on {addr}");
+    let scheme = if tls.is_some() { " (TLS)" } else { "" };
+    eprintln!("improv-server listening on {addr}{scheme}");
     let header_timeout = std::env::var("IMPROV_HEADER_TIMEOUT_MS")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -532,7 +549,7 @@ async fn main() {
     // request in flight is cut off; its save is one store transaction, so
     // it lands whole or not at all.
     tokio::select! {
-        () = serve(listener, app(state), header_timeout) => {}
+        () = serve(listener, app(state), header_timeout, tls) => {}
         () = stop => eprintln!("improv-server: shutting down"),
     }
 }
@@ -561,28 +578,75 @@ fn shutdown_signal() -> impl std::future::Future<Output = ()> {
     }
 }
 
-/// Refuse open mode (no tokens) on a non-loopback address unless the
-/// operator opts in with `IMPROV_ALLOW_OPEN=1` (S15).
+/// Refuse, on a non-loopback address, open mode (no tokens) unless the
+/// operator opts in with `IMPROV_ALLOW_OPEN=1` (S15), and tokens over plain
+/// HTTP unless `IMPROV_ALLOW_PLAIN=1`: a bearer token must not cross the
+/// network in cleartext. With TLS (`tls`) every connection is TLS.
 pub fn startup_check(
     addr: SocketAddr,
     auth: &Auth,
+    tls: bool,
     allow_open: Option<&str>,
+    allow_plain: Option<&str>,
 ) -> Result<(), String> {
-    if matches!(auth, Auth::Disabled) && !addr.ip().is_loopback() && allow_open != Some("1") {
-        return Err(format!(
+    if addr.ip().is_loopback() {
+        return Ok(());
+    }
+    match auth {
+        Auth::Disabled if allow_open != Some("1") => Err(format!(
             "refusing to serve {addr} without auth: set IMPROV_API_TOKEN, bind a \
              loopback address, or set IMPROV_ALLOW_OPEN=1"
-        ));
+        )),
+        Auth::Tokens(_) if !tls && allow_plain != Some("1") => Err(format!(
+            "refusing to serve {addr} over plain HTTP: the bearer tokens would cross the \
+             network in cleartext. Give --tls-cert and --tls-key, bind a loopback address \
+             behind a proxy that terminates TLS, or set IMPROV_ALLOW_PLAIN=1"
+        )),
+        _ => Ok(()),
     }
-    Ok(())
+}
+
+/// The TLS side of the listener: `cert` a PEM chain (the server's
+/// certificate first), `key` its PEM private key. HTTP/1.1 only, over
+/// ALPN, as the plain listener; rustls on the ring provider.
+pub fn tls_acceptor(
+    cert: &std::path::Path,
+    key: &std::path::Path,
+) -> Result<tokio_rustls::TlsAcceptor, String> {
+    use rustls::pki_types::pem::PemObject;
+    use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+    let at = |p: &std::path::Path, e: &dyn std::fmt::Display| format!("{}: {e}", p.display());
+    let chain = CertificateDer::pem_file_iter(cert)
+        .and_then(|certs| certs.collect::<Result<Vec<_>, _>>())
+        .map_err(|e| at(cert, &e))?;
+    if chain.is_empty() {
+        return Err(at(cert, &"no certificate in it (--tls-cert wants PEM)"));
+    }
+    let private = PrivateKeyDer::from_pem_file(key).map_err(|e| at(key, &e))?;
+    let mut config = rustls::ServerConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .map_err(|e| e.to_string())?
+    .with_no_client_auth()
+    .with_single_cert(chain, private)
+    .map_err(|e| format!("--tls-cert and --tls-key: {e}"))?;
+    config.alpn_protocols = vec![b"http/1.1".to_vec()];
+    Ok(tokio_rustls::TlsAcceptor::from(Arc::new(config)))
 }
 
 /// Accept loop: hyper HTTP/1 with a header-read timeout (S10). `axum::serve`
 /// (0.7) sets no header timer, so a client that never finishes its request
 /// line holds a socket forever (slow-loris). HTTP/1 only: the `hyper-util`
-/// `auto` builder would pull in h2, which the API does not need.
-async fn serve(listener: tokio::net::TcpListener, app: Router, header_timeout: Duration) {
-    use hyper_util::rt::{TokioIo, TokioTimer};
+/// `auto` builder would pull in h2, which the API does not need. With `tls`
+/// every connection is TLS; its handshake gets the header timeout too, and
+/// a client that does not speak TLS is dropped.
+async fn serve(
+    listener: tokio::net::TcpListener,
+    app: Router,
+    header_timeout: Duration,
+    tls: Option<tokio_rustls::TlsAcceptor>,
+) {
     loop {
         let (stream, peer) = match listener.accept().await {
             Ok(v) => v,
@@ -602,14 +666,38 @@ async fn serve(listener: tokio::net::TcpListener, app: Router, header_timeout: D
             },
         );
         let svc = hyper_util::service::TowerToHyperService::new(svc);
+        let tls = tls.clone();
         tokio::spawn(async move {
-            let _ = hyper::server::conn::http1::Builder::new()
-                .timer(TokioTimer::new())
-                .header_read_timeout(header_timeout)
-                .serve_connection(TokioIo::new(stream), svc)
-                .await;
+            match tls {
+                None => serve_connection(stream, svc, header_timeout).await,
+                Some(acceptor) => {
+                    let handshake = tokio::time::timeout(header_timeout, acceptor.accept(stream));
+                    if let Ok(Ok(stream)) = handshake.await {
+                        serve_connection(stream, svc, header_timeout).await;
+                    }
+                }
+            }
         });
     }
+}
+
+async fn serve_connection<I, S>(io: I, svc: S, header_timeout: Duration)
+where
+    I: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+    S: hyper::service::Service<
+            axum::http::Request<hyper::body::Incoming>,
+            Response = Response,
+            Error = std::convert::Infallible,
+        > + Send
+        + 'static,
+    S::Future: Send + 'static,
+{
+    use hyper_util::rt::{TokioIo, TokioTimer};
+    let _ = hyper::server::conn::http1::Builder::new()
+        .timer(TokioTimer::new())
+        .header_read_timeout(header_timeout)
+        .serve_connection(TokioIo::new(io), svc)
+        .await;
 }
 
 /// The API: method, path, the scope it needs, and the handler. Each route is
@@ -2625,7 +2713,7 @@ pub(crate) mod tests {
         let (app, _p) = seeded_app();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        let server = tokio::spawn(serve(listener, app, header_timeout));
+        let server = tokio::spawn(serve(listener, app, header_timeout, None));
         let mut c = tokio::net::TcpStream::connect(addr).await.unwrap();
         c.write_all(b"GET /health HTTP/1.1\r\nHost: x\r\n")
             .await
@@ -2691,19 +2779,126 @@ pub(crate) mod tests {
         assert!(find_token(&toks, "b").is_none());
     }
 
+    /// Address x auth x TLS x the two opt-ins: who may listen where.
     #[test]
-    fn startup_check_refuses_open_non_loopback() {
+    fn startup_check_refuses_open_and_plain_tokens_off_loopback() {
         let open = Auth::Disabled;
         let toks = Auth::Tokens(vec![token("t", Scope::Write, "s")]);
         let lo: SocketAddr = "127.0.0.1:3000".parse().unwrap();
         let lo6: SocketAddr = "[::1]:3000".parse().unwrap();
         let any: SocketAddr = "0.0.0.0:3000".parse().unwrap();
-        assert!(startup_check(lo, &open, None).is_ok());
-        assert!(startup_check(lo6, &open, None).is_ok());
-        assert!(startup_check(any, &open, None).is_err());
-        assert!(startup_check(any, &open, Some("0")).is_err());
-        assert!(startup_check(any, &open, Some("1")).is_ok());
-        assert!(startup_check(any, &toks, None).is_ok());
+        let lan: SocketAddr = "192.168.1.5:3000".parse().unwrap();
+        let ok = |a, auth, tls, o, p| startup_check(a, auth, tls, o, p).is_ok();
+        for a in [lo, lo6] {
+            for tls in [false, true] {
+                assert!(ok(a, &open, tls, None, None) && ok(a, &toks, tls, None, None));
+            }
+        }
+        for a in [any, lan] {
+            for tls in [false, true] {
+                assert!(!ok(a, &open, tls, None, None));
+                assert!(!ok(a, &open, tls, Some("0"), Some("1")));
+                assert!(ok(a, &open, tls, Some("1"), None));
+            }
+            // Tokens: TLS, or the explicit opt-in to plain HTTP.
+            assert!(ok(a, &toks, true, None, None));
+            assert!(!ok(a, &toks, false, None, None));
+            assert!(!ok(a, &toks, false, Some("1"), Some("0")));
+            assert!(ok(a, &toks, false, None, Some("1")));
+        }
+        let e = startup_check(any, &toks, false, None, None).unwrap_err();
+        assert!(
+            e.contains("--tls-cert and --tls-key") && e.contains("IMPROV_ALLOW_PLAIN=1"),
+            "{e}"
+        );
+    }
+
+    /// A CA, and a certificate for 127.0.0.1 and localhost it signed, in
+    /// PEM files: (CA, cert, key).
+    fn tls_files() -> (
+        rustls::pki_types::CertificateDer<'static>,
+        std::path::PathBuf,
+        std::path::PathBuf,
+    ) {
+        let mut ca = rcgen::CertificateParams::new(Vec::<String>::new()).unwrap();
+        ca.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+        let ca =
+            rcgen::CertifiedIssuer::self_signed(ca, rcgen::KeyPair::generate().unwrap()).unwrap();
+        let key = rcgen::KeyPair::generate().unwrap();
+        let leaf = rcgen::CertificateParams::new(vec!["127.0.0.1".into(), "localhost".into()])
+            .unwrap()
+            .signed_by(&key, &ca)
+            .unwrap();
+        let (cert_file, key_file) = (temp_path("cert.pem"), temp_path("key.pem"));
+        std::fs::write(&cert_file, leaf.pem() + &ca.pem()).unwrap();
+        std::fs::write(&key_file, key.serialize_pem()).unwrap();
+        (ca.der().clone(), cert_file, key_file)
+    }
+
+    #[test]
+    fn tls_acceptor_reports_bad_files() {
+        let (_, cert, key) = tls_files();
+        assert!(tls_acceptor(&cert, &key).is_ok());
+        let missing = std::path::Path::new("/nonexistent/improv.pem");
+        let e = tls_acceptor(missing, &key).err().unwrap();
+        assert!(e.starts_with("/nonexistent/improv.pem: "), "{e}");
+        let e = tls_acceptor(&cert, missing).err().unwrap();
+        assert!(e.starts_with("/nonexistent/improv.pem: "), "{e}");
+        // The key file as the chain: no certificate in it.
+        let e = tls_acceptor(&key, &key).err().unwrap();
+        assert!(e.contains("no certificate in it"), "{e}");
+        // Another key: it does not match the certificate.
+        let (_, _, other) = tls_files();
+        let e = tls_acceptor(&cert, &other).err().unwrap();
+        assert!(e.starts_with("--tls-cert and --tls-key: "), "{e}");
+    }
+
+    /// Over a real socket with `--tls-cert`/`--tls-key`: a client that
+    /// trusts the CA gets HTTP/1.1 over ALPN, and a plain-HTTP request gets
+    /// no HTTP answer.
+    #[tokio::test]
+    async fn tls_listener_serves_https_and_drops_plain_http() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (ca, cert, key) = tls_files();
+        let (app, _p) = seeded_app();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let acceptor = tls_acceptor(&cert, &key).unwrap();
+        let server = tokio::spawn(serve(listener, app, HEADER_READ_TIMEOUT, Some(acceptor)));
+
+        let mut roots = rustls::RootCertStore::empty();
+        roots.add(ca).unwrap();
+        let mut client = rustls::ClientConfig::builder_with_provider(Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+        client.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+        let connector = tokio_rustls::TlsConnector::from(Arc::new(client));
+        let name = rustls::pki_types::ServerName::try_from("127.0.0.1").unwrap();
+        let tcp = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let mut tls = connector.connect(name, tcp).await.unwrap();
+        assert_eq!(tls.get_ref().1.alpn_protocol(), Some(&b"http/1.1"[..]));
+        tls.write_all(b"GET /v1/health HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+            .await
+            .unwrap();
+        let mut resp = String::new();
+        tls.read_to_string(&mut resp).await.unwrap();
+        assert!(resp.starts_with("HTTP/1.1 200"), "{resp}");
+
+        let mut plain = tokio::net::TcpStream::connect(addr).await.unwrap();
+        plain
+            .write_all(b"GET /v1/health HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+            .await
+            .unwrap();
+        let mut buf = Vec::new();
+        let _ = tokio::time::timeout(Duration::from_secs(5), plain.read_to_end(&mut buf))
+            .await
+            .expect("the server should drop a plain-HTTP client");
+        assert!(!buf.starts_with(b"HTTP/"), "plain HTTP was answered");
+        server.abort();
     }
 
     fn post_cell(uri: &str, body: JsonValue, token: Option<&str>) -> Request<Body> {
@@ -3174,7 +3369,7 @@ pub(crate) mod tests {
         let state = Arc::new(state);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        let server = tokio::spawn(serve(listener, app(state), HEADER_READ_TIMEOUT));
+        let server = tokio::spawn(serve(listener, app(state), HEADER_READ_TIMEOUT, None));
         let mut codes = Vec::new();
         for _ in 0..2 {
             let mut c = tokio::net::TcpStream::connect(addr).await.unwrap();

@@ -5,6 +5,7 @@
 ```sh
 improv-server model.db 127.0.0.1:3000   # or IMPROV_ADDR=...; model defaults to improv.db
 improv-server 'postgres://me@127.0.0.1/sales?sslmode=disable&model=plan'
+improv-server sales.db 0.0.0.0:3443 --tls-cert fullchain.pem --tls-key key.pem   # HTTPS
 ```
 
 <video src="./img/server-demo.mp4" controls muted loop playsinline width="100%"
@@ -95,6 +96,7 @@ never logged; the audit log and the rate limiter use the token's name.
 | `IMPROV_API_TOKENS_RO` | Read tokens, comma-separated, named `IMPROV_API_TOKENS_RO#1`, … |
 | `IMPROV_API_TOKEN_FILE` | A file of tokens, so secrets stay out of the environment (below). |
 | `IMPROV_ALLOW_OPEN=1` | Allow open mode (no tokens) on a non-loopback address. Without it the server refuses to start. |
+| `IMPROV_ALLOW_PLAIN=1` | Allow tokens over plain HTTP on a non-loopback address, without `--tls-cert` ([TLS](#tls)). Without it the server refuses to start. |
 
 The token file has one `name:scope:secret` per line, `scope` being `read`
 or `write`; the secret may contain `:`. Blank lines and `#` comments are
@@ -211,25 +213,65 @@ as plain lines.
 **In a container.** Each release from 0.12 publishes
 `ghcr.io/gburd/improv:<version>` (and `:latest`, amd64): `improv-server` and
 the `improv` CLI on Debian trixie-slim, running as uid 10001 in `/data`,
-listening on port 3000. It refuses to start without a token:
+listening on port 3000. It refuses to start without a token, and with a
+token it refuses plain HTTP unless told otherwise. Either mount a
+certificate:
 
 ```sh
-podman run -d -p 127.0.0.1:3000:3000 -v "$PWD:/data" \
+podman run -d -p 3443:3000 -v "$PWD:/data" -v /etc/improv/tls:/tls:ro \
+  -e IMPROV_API_TOKEN_FILE=/data/tokens ghcr.io/gburd/improv /data/sales.db \
+  --tls-cert /tls/fullchain.pem --tls-key /tls/key.pem
+```
+
+or publish the port on the host's loopback for a proxy there, and say so:
+
+```sh
+podman run -d -p 127.0.0.1:3000:3000 -v "$PWD:/data" -e IMPROV_ALLOW_PLAIN=1 \
   -e IMPROV_API_TOKEN_FILE=/data/tokens ghcr.io/gburd/improv /data/sales.db
 podman run --rm -v "$PWD:/data" --entrypoint improv ghcr.io/gburd/improv list /data/sales.db
 ```
 
-The directory must be writable by uid 10001. Build it yourself with
-`podman build -f Containerfile .` from the repository.
+`IMPROV_ALLOW_PLAIN=1` is needed even behind `-p 127.0.0.1:3000:3000`.
+Inside the container the server must bind `0.0.0.0`, since a published port
+reaches the container's network interface, not its loopback, so the server
+cannot see that the host keeps the port off the network. The variable is
+your statement that it does (`-p 127.0.0.1:…`, or a proxy on the host).
+Without it the server stops with a message naming both ways out.
+
+The directory must be writable by uid 10001, and the certificate and key
+readable by it. Build the image yourself with `podman build -f
+Containerfile .` from the repository.
 
 The server stops on SIGTERM or Ctrl-C, at once: `docker stop`, `systemctl
 stop` and a terminal's Ctrl-C need no kill timeout. A request still running
 is cut off; a write in it is one store transaction, so it is saved whole or
 not at all.
 
-`improv-server` speaks plain HTTP; it has no TLS of its own. To serve it
-beyond the machine, bind it to loopback and put a reverse proxy in front
-that terminates TLS:
+### TLS
+
+`improv-server` serves HTTPS itself with `--tls-cert FILE --tls-key FILE`:
+the certificate chain in PEM (the server's certificate first, then any
+intermediates) and its private key (PKCS#8, PKCS#1 or SEC1 PEM). Every
+connection is then TLS 1.2 or 1.3, HTTP/1.1 over ALPN; a client that does
+not speak TLS is dropped, and a handshake gets the header read timeout.
+The certificate is read at startup: restart the server to renew it.
+
+```sh
+IMPROV_API_TOKEN_FILE=/etc/improv/tokens improv-server /srv/improv/sales.db 0.0.0.0:443 \
+  --tls-cert /etc/letsencrypt/live/improv.example.com/fullchain.pem \
+  --tls-key /etc/letsencrypt/live/improv.example.com/privkey.pem
+curl -H "Authorization: Bearer $TOKEN" https://improv.example.com/v1/measures
+```
+
+Bearer tokens travel in a header, so they never cross a network in
+cleartext by default. On an address that is not loopback, with tokens set
+and no `--tls-cert`, the server refuses to start unless
+`IMPROV_ALLOW_PLAIN=1` (for a container behind the host's loopback, above,
+or a proxy elsewhere on a network you trust). Without tokens it refuses to
+start there unless `IMPROV_ALLOW_OPEN=1`.
+
+Or bind it to loopback and put a reverse proxy in front that terminates
+TLS (and renews the certificate):
 
 ```sh
 IMPROV_API_TOKEN_FILE=/etc/improv/tokens IMPROV_AUDIT_LOG=/var/log/improv/audit.log \
@@ -266,11 +308,7 @@ server {
 ```
 
 Keep the proxy's body limit at or below `IMPROV_MAX_BODY_BYTES`, and its read
-timeout above the server's 30 s request time. Bearer tokens travel in a
-header, so never expose the plain-HTTP port itself: the server refuses to
-listen on a non-loopback address without tokens (unless `IMPROV_ALLOW_OPEN=1`),
-but with tokens set it will, and the tokens would then cross the network in
-clear text.
+timeout above the server's 30 s request time.
 
 ## A web front end
 

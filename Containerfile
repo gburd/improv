@@ -1,14 +1,18 @@
 # improv-server (and the improv CLI) in a container: ghcr.io/gburd/improv.
 #
 #   podman build -t improv -f Containerfile .
-#   podman run --rm -p 3000:3000 -v "$PWD:/data" \
+#   podman run --rm -p 127.0.0.1:3000:3000 -v "$PWD:/data" -e IMPROV_ALLOW_PLAIN=1 \
 #     -e IMPROV_API_TOKEN_FILE=/run/secrets/improv-tokens improv /data/sales.db
 #
 # The server binds IMPROV_ADDR=0.0.0.0:3000 inside the container (an address
 # argument overrides it), so it refuses to start
 # without a token (IMPROV_API_TOKEN, IMPROV_API_TOKENS or
-# IMPROV_API_TOKEN_FILE) unless IMPROV_ALLOW_OPEN=1. It runs as an
-# unprivileged user; the model directory must be writable by uid 10001.
+# IMPROV_API_TOKEN_FILE) unless IMPROV_ALLOW_OPEN=1, and with a token it
+# refuses plain HTTP unless IMPROV_ALLOW_PLAIN=1 (the host keeps the port off
+# the network: -p 127.0.0.1:3000:3000) or it has a certificate (mount it and
+# add --tls-cert /tls/cert.pem --tls-key /tls/key.pem after the model). It
+# runs as an unprivileged user; the model directory must be writable by uid
+# 10001.
 FROM docker.io/library/rust:1.97-trixie AS build
 WORKDIR /src
 COPY . .
