@@ -54,9 +54,19 @@ Each front end takes a model file or a Postgres model URL
 (`postgres://user@host/db?model=plan`). The guide's
 [Ways to Use Improv](docs/src/ways.md) chapter explains when to use which.
 
-### The desktop GUI
+### The desktop GUI, in the NeXTSTEP style
+
+`improv-gui` follows Lotus Improv on NeXTSTEP: worksheets in windows, a
+main menu, category tiles you drag to pivot, and the formula pane.
 
 ![The GUI: pivoting a tile, paging, editing a cell, a formula typed with autocomplete, a color graph and the Inspector](docs/src/img/gui-demo.gif)
+
+### The COSMIC desktop GUI (preview)
+
+`improv-cosmic` is a native [COSMIC](https://system76.com/cosmic)
+application on the same models, in the desktop's theme.
+
+![improv-cosmic: pivoting the Region tile, Swap, editing a Quantity cell and Revenue following, a formula with completions and a located error, and the chart](docs/src/img/cosmic-demo.gif)
 
 ### The terminal UI
 

@@ -8,6 +8,9 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Docs: a movie of the COSMIC GUI.** `docs/demo/cosmic-movie.sh`
+  records improv-cosmic as `gui-movie.sh` records improv-gui; the README
+  shows both GUIs' movies, and the COSMIC chapter plays it.
 - **TLS to Postgres.** Every Improv connection to Postgres (a
   `postgres://` model in the CLI, TUI, GUIs and improv-server, and SQL
   data sources) uses TLS, by rustls, to any host off the machine, and

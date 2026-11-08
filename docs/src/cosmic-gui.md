@@ -15,6 +15,16 @@ desktop.
 the Rows, Columns and Pages strips of category tiles, the grid (the
 cursor in the accent color), and the formula list.*
 
+<video src="./img/cosmic-demo.mp4" controls muted loop playsinline width="100%"
+  poster="./img/cosmic-demo.png">
+  <img src="./img/cosmic-demo.gif" alt="improv-cosmic: pivoting the Region tile, Swap, editing a Quantity cell and Revenue following, a formula with completions and a located error, and the chart">
+</video>
+
+*Pivoting by dragging the Region tile, Swap, a Quantity edit that
+Revenue follows, a formula typed with completions, a wrong name refused
+with the error located and a suggestion, and the chart. A caption under
+the screen says what each step does.*
+
 It is a preview. It covers the everyday work on a model (see
 [What it does](#what-it-does)), not yet all of `improv-gui`; see
 [Not yet](#not-yet).
