@@ -2015,6 +2015,11 @@ fn partial_rights_name_clashes_and_the_window_cap() {
         ("some", "none")
     );
     assert!(caps.measures.iter().all(|m| m.id != 100), "Price is hidden");
+    // The same through serve, as a model service asks.
+    match a.serve(&ann(), "s1", Request::Capabilities) {
+        Ok(Response::Capabilities(c)) => assert_eq!(c, caps),
+        r => panic!("{r:?}"),
+    }
     // Revenue reads hidden Price: ann sees Revenue but not its formula,
     // and may not replace it; renaming it is fine.
     let r = refused(

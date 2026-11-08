@@ -278,6 +278,7 @@ fn refused(r: Refusal) -> Response {
 fn reply(r: Result<Resp, Refusal>) -> Response {
     match r {
         Ok(Resp::Structure(s)) => Json(s).into_response(),
+        Ok(Resp::Capabilities(c)) => Json(c).into_response(),
         Ok(Resp::Cells(c)) => Json(c).into_response(),
         Ok(Resp::Done(d)) => Json(d).into_response(),
         Err(e) => refused(e),

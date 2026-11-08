@@ -9,8 +9,9 @@
 //! [`wire`] is the `/v1` API a GUI drives, as types both sides share, and
 //! the [`wire::ModelService`] trait a GUI calls; [`layout`] is a
 //! worksheet's pivot and cell cache over it. The browser build implements
-//! the trait over `fetch`; `improv_service` has the authority itself (a
-//! store and the engine) and a local implementation over it.
+//! the trait over `fetch`; the `remote` feature adds [`remote`], the same
+//! over HTTP(S) for native front ends; `improv_service` has the authority
+//! itself (a store and the engine) and a local implementation over it.
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 // The attribute is only used inside #[cfg(test)] modules, so non-test
 // coverage builds would otherwise warn that the feature is unused.
@@ -21,6 +22,8 @@ pub mod diagnostics;
 pub mod dsl;
 pub mod function_help;
 pub mod layout;
+#[cfg(feature = "remote")]
+pub mod remote;
 pub mod wire;
 
 /// A model the tests share: the canonical Time x Product revenue model.

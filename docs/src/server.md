@@ -390,6 +390,20 @@ sees other writers on its next request. A browser's `EventSource` cannot
 send the `Authorization` header: read the stream with `fetch` instead,
 as the web GUI does.
 
+**Native clients.** `improv_client::remote` (the `remote` feature) is
+the same model service for programs outside a browser: requests over
+HTTP/1.1, the change stream on a thread of its own, resumed with
+`?since=` after a dropped connection. Its URL is
+`https://HOST[:PORT][/PREFIX]`, with `?sslrootcert=FILE` to trust only
+the CA in that PEM file (a private CA); without it, the operating
+system's CAs. The certificate is always verified, and its name checked.
+`http://` is accepted only to this machine (`localhost`, `127.0.0.1`,
+`::1`) and refused for any other host, so a token never crosses a
+network in cleartext; there is no option to allow it. It follows no
+redirect (the token stays with the host it was given for), refuses a
+URL with a user name or password, and an `http://` URL does not go
+through `*_PROXY`.
+
 **Access.** Every GUI route asks the model's access policies, for each
 measure, item and cell it touches, within what the token's scope allows
 (see [Access policies](#access-policies)). A hidden measure, item or cell

@@ -10,6 +10,15 @@ improv_core_model = { path = "../core_model" }
 serde.workspace = true
 serde_json.workspace = true
 chrono.workspace = true
+# The remote model service (native only): see `remote`.
+ureq = { workspace = true, optional = true }
+rustls = { workspace = true, optional = true }
+
+[features]
+# `improv_client::remote`: the model service over improv-server's /v1, for
+# the desktop GUI and the TUI. Off by default, so the crate stays
+# wasm-safe.
+remote = ["dep:ureq", "dep:rustls"]
 
 # `cargo llvm-cov` on nightly sets `--cfg coverage_nightly`; test modules are
 # `coverage(off)` so the report measures library code only.

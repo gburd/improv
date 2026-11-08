@@ -280,6 +280,7 @@ impl Authority {
         }
         Ok(match req {
             Request::Structure => Response::Structure(self.structure(who)),
+            Request::Capabilities => Response::Capabilities(self.capabilities(who)?),
             Request::Window(m, w) => Response::Cells(self.window(who, m, &w)?),
             Request::Edit(e) => Response::Done(self.edit(who, session, e)?),
             Request::Undo => Response::Done(self.undo(who, session, false)?),
@@ -1000,6 +1001,7 @@ impl Authority {
                 (c, format!("deleted view {}", old.name.0), None)
             }
             Request::Structure
+            | Request::Capabilities
             | Request::Window(..)
             | Request::Edit(_)
             | Request::Undo

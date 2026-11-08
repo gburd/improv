@@ -456,6 +456,8 @@ pub fn take_events(buf: &mut String) -> Vec<ChangeEvent> {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Request {
     Structure,
+    /// What the caller may do: hints for greying out a GUI.
+    Capabilities,
     Window(u32, WindowReq),
     Edit(EditReq),
     Define(DefineReq),
@@ -478,6 +480,7 @@ pub enum Request {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Response {
     Structure(Structure),
+    Capabilities(Capabilities),
     Cells(Cells),
     Done(Done),
 }
@@ -489,6 +492,7 @@ impl Request {
         let j = |v: &dyn erased::Ser| Some(v.json());
         match self {
             R::Structure => ("GET", "/v1/structure".into(), None),
+            R::Capabilities => ("GET", "/v1/capabilities".into(), None),
             R::Window(m, w) => ("POST", format!("/v1/measures/{m}/window"), j(w)),
             R::Edit(e) => ("POST", "/v1/cells".into(), j(e)),
             R::Define(d) => ("POST", "/v1/measures".into(), j(d)),
@@ -510,7 +514,10 @@ impl Request {
 
     /// Whether it changes the model (and so needs a write token).
     pub fn writes(&self) -> bool {
-        !matches!(self, Request::Structure | Request::Window(..))
+        !matches!(
+            self,
+            Request::Structure | Request::Capabilities | Request::Window(..)
+        )
     }
 
     /// Parse a response body for this request.
@@ -518,6 +525,7 @@ impl Request {
         let e = |e: serde_json::Error| format!("bad reply: {e}");
         Ok(match self {
             Request::Structure => Response::Structure(serde_json::from_str(body).map_err(e)?),
+            Request::Capabilities => Response::Capabilities(serde_json::from_str(body).map_err(e)?),
             Request::Window(..) => Response::Cells(serde_json::from_str(body).map_err(e)?),
             _ => Response::Done(serde_json::from_str(body).map_err(e)?),
         })
@@ -881,6 +889,15 @@ mod tests {
             serde_json::from_str::<UpdateMeasureReq>("{}").unwrap(),
             UpdateMeasureReq::default()
         );
+        let caps = Request::Capabilities;
+        assert_eq!(caps.http().1, "/v1/capabilities");
+        assert!(!caps.writes());
+        let body = r#"{"version":"1","restricted":true,"admin":false,"add_measure":false,
+            "edit_structure":false,"manage_views":false,
+            "measures":[{"id":101,"define":false,"cells":"some"}],"edit_items":[]}"#;
+        assert!(matches!(caps.parse_reply(body),
+            Ok(Response::Capabilities(c)) if c.restricted && c.measures[0].cells == "some"));
+        assert!(caps.parse_reply("{}").is_err());
         for req in [
             Request::Structure,
             Request::Edit(EditReq::default()),

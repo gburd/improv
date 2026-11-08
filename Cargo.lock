@@ -3089,8 +3089,10 @@ version = "0.14.0"
 dependencies = [
  "chrono",
  "improv_core_model",
+ "rustls",
  "serde",
  "serde_json",
+ "ureq",
 ]
 
 [[package]]
@@ -7407,6 +7409,7 @@ dependencies = [
  "percent-encoding",
  "rustls",
  "rustls-pki-types",
+ "rustls-platform-verifier",
  "ureq-proto",
  "utf8-zero",
  "webpki-roots",

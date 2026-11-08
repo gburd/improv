@@ -34,6 +34,8 @@ chrono.workspace = true
 
 [dev-dependencies]
 improv_extfn = { path = "../extfn" }
+# tests/remote.rs: the native remote model service against this binary.
+improv_client = { path = "../client", features = ["remote"] }
 tokio = { workspace = true, features = ["io-util", "test-util"] }
 rcgen.workspace = true
 

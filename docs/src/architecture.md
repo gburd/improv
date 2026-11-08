@@ -25,7 +25,7 @@ the ones below it.
 | `gui_web` | `improv_gui_web` | The web GUI: the desktop GUI's worksheet, theme and menu compiled to `wasm32-unknown-unknown`, over `improv-server`'s `/v1` API ([The Web GUI](./web-gui.md)). |
 | `gui_cosmic` | `improv_gui_cosmic` | `improv-cosmic`, a COSMIC desktop GUI on libcosmic, in a Cargo workspace of its own ([The COSMIC Desktop GUI](./cosmic-gui.md)). |
 | `policy` | `improv_policy` | Cedar access policies: the schema, the evaluator with its per-session decision cache, the templates and the lint ([Access Policies](./policies.md)). |
-| `client` | `improv_client` | What the front ends share without the engine or a store: located formula errors, autocomplete, function help, the formula printer. Builds for `wasm32-unknown-unknown`. |
+| `client` | `improv_client` | What the front ends share without the engine or a store: located formula errors, autocomplete, function help, the formula printer, the `/v1` types and the model-service trait, a worksheet's pivot and cell cache. Builds for `wasm32-unknown-unknown`; the `remote` feature adds the model service over `improv-server` (HTTPS, verified) for native front ends. |
 | `service` | `improv_service` | The authority a GUI drives: one model, its live engine and the `/v1` operations, each checked against the model's access policies and answered with only what the caller may see. `improv-server` serves it. |
 | `server` | `improv_server` | `improv-server`, a JSON HTTP API over a model store. |
 | `pg_model` | `improv_pg_model` | The Postgres-free core of `pg_improv`: catalog rows → `Model`, bound rows → cells, engine results → SQL. |

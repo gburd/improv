@@ -57,6 +57,15 @@ this project follows [Semantic Versioning](https://semver.org/).
   column labels are `<th>` cells, and a paste skips `<th>` cells, so a
   range copied from improv-cosmic pastes back as its values, not offset by
   its labels, on every platform.
+- **A native client for improv-server.** `improv_client::remote` (the
+  `remote` feature) is the model service over the server's `/v1` API
+  for programs outside a browser: a bearer token, requests in order on a
+  thread of their own, and the change stream (`/v1/changes`) followed
+  and resumed after a dropped connection. `https://` is always verified,
+  against the operating system's CAs or `?sslrootcert=FILE`; `http://`
+  is refused to any host but this machine, redirects are not followed,
+  and a certificate error names the problem. `Request::Capabilities`
+  (`GET /v1/capabilities`) joins the model service's requests.
 
 ### Fixed
 
