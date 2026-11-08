@@ -31,7 +31,16 @@ stages 1-4 in 0.13).
   storage_pg/store `load_policies`/`save_policies`/`policy_version` call
   them. `tests/policies.sh` in `ci/pg_improv.sh`. Measured numbers are in
   the design note's Performance section.
-- **NEXT:** stage 4, TLS.
+- **Stage 4 DONE** (`work/tls`, for 0.14): `improv_storage_pg::tls`, the
+  one Postgres transport (storage_pg and storage_sql): rustls/ring,
+  `tokio-postgres-rustls`, `rustls-platform-verifier`; sslmode disable/
+  prefer/require/verify-ca/verify-full and sslrootcert parsed by Improv;
+  `require` = verify-full; `prefer` off the host never cleartext; SCRAM
+  channel binding. improv-server `--tls-cert`/`--tls-key`; tokens off
+  loopback without TLS need `IMPROV_ALLOW_PLAIN=1` (the image does not set
+  it). Live TLS tests on `IMPROV_TEST_PG_TLS` (CI coverage job: PG 17 with
+  ssl=on). As built: the design note's "Stage 4 as built".
+- **NEXT:** stage 5, filtered clients.
 - **Rule for every front end:** a client under a read policy never
   computes derived values itself; it reads them, and what-ifs, from the
   authority. Hidden is absent. Versions are opaque. (`improv_client`'s

@@ -639,8 +639,9 @@ Each stage lands green on its own (fmt, clippy, tests, docs, CHANGELOG).
    `explain_access`, filtered read functions, RLS on result tables, edit
    and define for non-owners, the update script. As built (see
    [Stage 3 as built](#stage-3-as-built)).
-4. **TLS.** storage_pg rustls and sslmode; `--tls-cert`/`--tls-key` in
-   the server.
+4. **TLS** (done; 0.14). storage_pg rustls and sslmode; `--tls-cert`/
+   `--tls-key` in the server. As built (see
+   [Stage 4 as built](#stage-4-as-built)).
 5. **Filtered clients.** The model service's remote implementations: over
    the server's API and over pg_improv's filtered functions. The GUI, TUI
    and CLI use them for any restricted user; capability hints grey out
@@ -711,6 +712,68 @@ Each stage lands green on its own (fmt, clippy, tests, docs, CHANGELOG).
 - **Messages.** A role the policies do not let open the model gets
   "its access policies do not let you open it": model names are public
   (`improv.models`), so this hides nothing that is not already shown.
+
+### Stage 4 as built
+
+- **One transport.** `improv_storage_pg::tls::connect` opens every Improv
+  connection to Postgres: `PgModelStore::open` (so `improv_store` and every
+  front end: CLI, `improv policy`, TUI, both GUIs, the server) and
+  `improv_storage_sql::connect_postgres` (SQL data sources). rustls 0.23 on
+  ring, TLS 1.2 and 1.3; `tokio-postgres-rustls` 0.14 is the
+  `MakeTlsConnect` (its version lines up with `postgres` 0.19.14 /
+  `tokio-postgres` 0.7.18), and gives SCRAM channel binding
+  (`tls-server-end-point`). ALPN `postgresql`, as libpq 17 sends.
+- **Parameters.** Improv takes `sslmode`, `sslrootcert`, `sslcert` and
+  `sslkey` out of the keyword/value string or the URL query before the
+  driver parses the rest. `sslmode`: `disable`, `prefer` (default),
+  `require`, `verify-ca`, `verify-full`; `allow` is refused. `sslrootcert`:
+  a PEM file of CAs (only those are trusted), or unset/empty/`system` for
+  the operating system's roots. `sslcert`/`sslkey` (client certificates)
+  are refused by name: not built.
+- **The decision table** (`tls::transport`, unit-tested cell by cell):
+  a Unix socket is always cleartext (as libpq); loopback is cleartext for
+  `disable` and `prefer`, TLS for the others; anything else (any host or
+  `hostaddr` off loopback, the farthest of them decides) is TLS unless
+  `disable`. TLS always verifies: `require`, `prefer` and `verify-full`
+  check the chain and the name, `verify-ca` the chain only, and refuses
+  to run on the system roots (any site's certificate would pass). TLS needs
+  `host=` (the name checked); `hostaddr=` alone is refused.
+- **No fallback.** When TLS is chosen the driver runs with `sslmode=require`,
+  so a server answering the SSLRequest with `N` is refused before the
+  startup message; a fake server in the unit tests checks that nothing,
+  not even the user name, follows the refusal.
+- **System roots.** `rustls-platform-verifier` 0.7: the OS verifier on
+  macOS and Windows (revocation included), `rustls-native-certs` and webpki
+  on Linux and the BSDs. Not `webpki-roots`: a Mozilla bundle compiled into
+  the binary would ignore a site's own CAs in the system store, and the
+  platform verifier builds on every CI target (Linux, macOS, Windows;
+  FreeBSD and illumos use the same unix path).
+- **Errors.** `ConnectError::{Refused, Tls, Driver}`; a TLS failure is
+  described from rustls's `CertificateError` (an unknown CA, "is not valid
+  for "h" (it names a, b)", expired, not yet valid, revoked) or the
+  server's refusal of TLS; never the connection string.
+- **Tests.** Unit: the parser, the table, parameter stripping (keyword and
+  URL, quoting, percent-encoding), and certificate errors against an
+  in-process rustls server with `rcgen` CAs (wrong name, unknown CA, an
+  expired certificate, verify-ca, `prefer` off the host refused without a
+  byte sent). Live (`IMPROV_TEST_PG` + `IMPROV_TEST_PG_TLS`, a Postgres 17
+  with `ssl=on` made in CI's coverage job): verify-full and `require` with
+  `channel_binding=require`, verify-ca with a wrong name, a model store
+  over a URL with `sslrootcert`, a wrong name and an unknown CA refused,
+  `prefer` off the host (by name, at the server's address) on TLS, and
+  loopback `prefer` cleartext.
+- **improv-server.** `--tls-cert FILE --tls-key FILE` (clap requires both):
+  rustls on ring through `tokio-rustls` 0.26, HTTP/1.1 over ALPN, the
+  handshake under the header read timeout, a plain-HTTP client dropped;
+  axum 0.8 and the hyper accept loop are unchanged. `startup_check`: on a
+  non-loopback address, no tokens needs `IMPROV_ALLOW_OPEN=1` (as before),
+  and tokens without TLS need `IMPROV_ALLOW_PLAIN=1`. The container image
+  does not set it (the maintainer's ruling), so a container that publishes
+  the port needs it or a mounted certificate; `release.yml` checks the
+  refusal, the opt-in and HTTPS with a generated CA.
+- **Not done.** Client certificates; `sslnegotiation=direct` is passed to
+  the driver untouched (it works with `require`-class modes; `prefer`
+  with it is the driver's error); certificate reload without a restart.
 
 ### What 0.13 delivers
 
