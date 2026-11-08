@@ -339,7 +339,7 @@ dependencies = [
 
 [[package]]
 name = "improv_core_model"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "chrono",
  "serde",
@@ -351,7 +351,7 @@ dependencies = [
 
 [[package]]
 name = "improv_engine"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "chrono",
  "differential-dataflow",
@@ -369,7 +369,7 @@ dependencies = [
 
 [[package]]
 name = "improv_extfn"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "chrono",
  "improv_core_model",
@@ -383,7 +383,7 @@ dependencies = [
 
 [[package]]
 name = "improv_nl_formula"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "improv_core_model",
  "thiserror",
@@ -391,7 +391,7 @@ dependencies = [
 
 [[package]]
 name = "improv_verified"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "vstd",
 ]

@@ -6,6 +6,21 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-11-08
+
+The release that encrypts every connection off the machine. Every Improv
+connection to Postgres (the CLI, TUI, GUIs and improv-server on a
+`postgres://` model, and SQL data sources) uses TLS to a host off the
+machine, by rustls, and verifies the server's certificate; `sslmode`
+`require` checks the name too, stricter than libpq, and `prefer` never
+falls back to cleartext off the machine. improv-server serves HTTPS with
+`--tls-cert`/`--tls-key`, and with API tokens it refuses plain HTTP off
+loopback unless `IMPROV_ALLOW_PLAIN=1`: a breaking change for containers
+that publish the port and send tokens over plain HTTP (see Changed for
+the one-line fix). pg_improv 0.14.0 changes only its library: the sync
+worker now reports a REVOKE from a model's owner clearly every time. The
+docs gain a movie of the COSMIC GUI.
+
 ### Added
 
 - **Docs: a movie of the COSMIC GUI.** `docs/demo/cosmic-movie.sh`
@@ -3158,7 +3173,8 @@ Improv becomes buildable by anyone who clones it.
 - Project infrastructure: workspace, `rustfmt.toml`, `clippy.toml`, `deny.toml`,
   `.typos.toml`, CI, dual license (Apache-2.0 OR MIT), contributor guide.
 
-[Unreleased]: https://codeberg.org/gregburd/improv/compare/v0.13.0...main
+[Unreleased]: https://codeberg.org/gregburd/improv/compare/v0.14.0...main
+[0.14.0]: https://codeberg.org/gregburd/improv/compare/v0.13.0...v0.14.0
 [0.13.0]: https://codeberg.org/gregburd/improv/compare/v0.12.2...v0.13.0
 [0.12.2]: https://codeberg.org/gregburd/improv/compare/v0.12.1...v0.12.2
 [0.12.1]: https://codeberg.org/gregburd/improv/compare/v0.12.0...v0.12.1
