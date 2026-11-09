@@ -93,7 +93,21 @@ pub fn assisted(
     if resp.has_focus() {
         let at = caret(&ctx, id, text);
         let cands = completion::offer(model, text, at);
-        if !cands.is_empty() && popup.sync(text, &word(text, at), cands.len()) {
+        let open = !cands.is_empty() && popup.sync(text, &word(text, at), cands.len());
+        // egui reads the focus lock for Tab at the next frame's start, so
+        // set it from the list as this frame's typing left it: Tab right
+        // after typing then completes instead of leaving the field.
+        ui.memory_mut(|m| {
+            m.set_focus_lock_filter(
+                id,
+                egui::EventFilter {
+                    tab: open,
+                    horizontal_arrows: true,
+                    ..Default::default()
+                },
+            )
+        });
+        if open {
             let below = resp.rect.left_bottom();
             egui::Area::new(id.with("list"))
                 .order(egui::Order::Foreground)
