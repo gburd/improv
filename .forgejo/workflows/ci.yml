@@ -209,6 +209,9 @@ jobs:
           path: improv
       - name: Install cargo-deny
         run: cargo install cargo-deny --locked
+      - name: Licence scan of the vendored crates (see .github/workflows/ci.yml)
+        working-directory: improv
+        run: python3 crates/gui_cosmic/release/license-scan.py vendor . "$(mktemp -d)/vendor"
       - name: Deny
         working-directory: improv
         run: cargo deny check advisories licenses bans sources

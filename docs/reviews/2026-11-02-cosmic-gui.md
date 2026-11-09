@@ -138,8 +138,9 @@ checksum, and refuses if the file is gone or its first line is no longer
 that GPL header. `release/license-scan.py` then reads every vendored
 file's SPDX headers: GPL and AGPL fail, and an LGPL file fails unless
 `release/license-allow.txt` lists it and it matches its upstream crate.
-`release/build.sh` and `ci/solnix-build.sh` build from the patched
-tree. Checked at this pin: 836 crates vendored, 789 files with SPDX
+`ci/gui_cosmic.sh` runs both, CI's `deny` job scans the root's vendored
+crates, and `release/build.sh` and `ci/solnix-build.sh` build from the
+patched tree. Checked at this pin: 836 crates vendored, 789 files with SPDX
 headers, the 18 LGPL-2.1-or-later KDE protocol XMLs of
 `wayland-protocols-plasma` and `wayland-protocols-misc` (MIT crates; also
 in the root's lockfile), and no other copyleft header (the root adds

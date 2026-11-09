@@ -62,10 +62,9 @@ this project follows [Semantic Versioning](https://semver.org/).
   is answered, a release build (`crates/gui_cosmic/release/build.sh`, and
   the Solnix build) vendors libcosmic with that file replaced by Improv's
   own MIT OR Apache-2.0 implementation. Developer builds are unchanged.
-- **A licence scan of the vendored crates' files.** The release vendoring
-  reads every vendored file's `SPDX-License-Identifier` headers
-  (`crates/gui_cosmic/release/license-scan.py`, for any workspace), and
-  fails on GPL or AGPL, and on an LGPL file that is
+- **A licence scan of the vendored crates' files.** CI reads every
+  vendored file's `SPDX-License-Identifier` headers, for the root and for
+  improv-cosmic, and fails on GPL or AGPL, and on an LGPL file that is
   not listed or differs from its upstream crate. The policy, in
   CONTRIBUTING.md ("Licences of dependencies"): Improv links LGPL code
   unmodified, and any change we make to it is offered upstream under that

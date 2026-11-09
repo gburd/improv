@@ -72,7 +72,8 @@ no longer that GPL header (a bump that moves or relicenses it needs a
 human look). Then `license-scan.py` reads every vendored file's SPDX
 headers: GPL and AGPL fail, and so does an LGPL file that is not listed in
 `release/license-allow.txt` or differs from its upstream crate (the
-policy: CONTRIBUTING.md, "Licences of dependencies").
+policy: CONTRIBUTING.md, "Licences of dependencies"). `ci/gui_cosmic.sh`
+runs it, so a libcosmic bump that adds a GPL file fails CI.
 `ci/solnix-build.sh` applies the same patch and scan after Solnix's
 fixups. Once upstream relicenses the file, the patch and this check are
 dropped.

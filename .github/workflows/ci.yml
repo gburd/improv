@@ -133,6 +133,15 @@ jobs:
         with:
           persist-credentials: false
           path: improv
+      # cargo-deny reads manifests; this reads the vendored sources' SPDX
+      # headers: no GPL or AGPL file, no unlisted or modified LGPL one
+      # (CONTRIBUTING.md, "Licences of dependencies"). crates/gui_cosmic's
+      # tree is scanned by ci/gui_cosmic.sh. First, so a failing advisory
+      # cannot hide it.
+      - name: Licence scan of the vendored crates
+        run: >
+          python3 improv/crates/gui_cosmic/release/license-scan.py
+          vendor improv "$RUNNER_TEMP/vendor"
       - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
         with:
           manifest-path: improv/Cargo.toml
@@ -389,9 +398,11 @@ jobs:
 
   # The COSMIC GUI (crates/gui_cosmic: its own Cargo workspace, so
   # libcosmic's iced, wgpu and winit fork stay out of the root lockfile).
-  # ci/gui_cosmic.sh: fmt, clippy, tests, rustdoc, and cargo-deny with the
-  # crate's deny.toml; Windows builds and tests it too (no AccessKit there
-  # at the libcosmic pin, see docs/src/cosmic-gui.md).
+  # ci/gui_cosmic.sh: fmt, clippy, tests, rustdoc, cargo-deny with the
+  # crate's deny.toml, and (Linux) the release vendoring that replaces
+  # libcosmic's GPL localize.rs, with its licence scan (pop-os/libcosmic#1500);
+  # Windows builds and tests it too (no AccessKit there at the libcosmic
+  # pin, see docs/src/cosmic-gui.md).
   gui-cosmic:
     name: COSMIC GUI (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -426,7 +437,8 @@ jobs:
       - name: gui_cosmic
         shell: bash
         env:
-          # cargo-deny's verdict does not depend on the host: run it once.
+          # cargo-deny's and the licence scan's verdicts do not depend on
+          # the host: run them once.
           GUI_COSMIC_DENY: ${{ runner.os == 'Linux' && '1' || '0' }}
         run: improv/ci/gui_cosmic.sh
 

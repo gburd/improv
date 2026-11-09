@@ -251,9 +251,9 @@ published upstream, under that licence, as a PR against that project. GPL
 and AGPL code is not allowed; any other copyleft licence needs the
 maintainer's decision first. `cargo deny check` checks the crates' declared
 licences. `crates/gui_cosmic/release/license-scan.py` checks the files'
-own `SPDX-License-Identifier` headers in the vendored crates: for the root
-`python3 crates/gui_cosmic/release/license-scan.py vendor . DIR`, for
-`crates/gui_cosmic` its release vendoring. The LGPL files
+own `SPDX-License-Identifier` headers in the vendored crates, for the root
+(CI's `deny` job: `python3 crates/gui_cosmic/release/license-scan.py vendor
+. DIR`) and for `crates/gui_cosmic` (`ci/gui_cosmic.sh`). The LGPL files
 we link are listed, with their exact licence, in
 `crates/gui_cosmic/release/license-allow.txt`. A listed file that differs
 from its upstream crate fails the scan unless its line ends
