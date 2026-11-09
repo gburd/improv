@@ -241,9 +241,11 @@ improv-server      'duckdb:/srv/plans.duckdb?model=plan'
 - **The CLI when the server is not running.** Build, import and set the
   policies with `improv`, then start the server; stop it to run the CLI
   again.
-- **The desktop GUIs and the TUI** are not supported on `duckdb:`
-  targets yet: edit a DuckDB-hosted model in the web GUI, through the
-  server.
+- **The desktop GUI and the TUI** reach a DuckDB-hosted model through
+  the server too: `improv-gui https://host` or `improv-tui https://host`
+  opens what that server serves, as the token's user (see [the desktop
+  GUI](./gui-tour.md#a-model-on-a-server)). They do not open a `duckdb:`
+  target themselves, and the COSMIC GUI does not reach one yet.
 
 The tables (`improv.model`, `improv.measure`, `improv.cell`,
 `improv.policy`, …) are described in

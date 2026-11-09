@@ -49,8 +49,8 @@ stages 1-4 in 0.13).
   (`hold_duckdb`), Cedar and `/v1/changes` as for other stores. As built:
   the design note's "Stage 7 as built". No primary key on `improv.cell` (a 1M-cell rewrite
   was 30x slower with one): a one-cell save scans the model's cells, 14 ms
-  at 1M. Not yet: desktop GUIs/TUI on `duckdb:` (use the web GUI), one
-  model per server.
+  at 1M. The desktop GUI and TUI reach one through the server
+  (`https://…`, stage 5); not yet: the COSMIC GUI, one model per server.
 - **Stages 5 and 6 (`work/live`, for 0.14/0.15), as built** (the design
   note's "Stages 5 and 6 as built"): `improv_client::remote` (feature
   `remote`: ureq on rustls/ring, OS roots or `?sslrootcert=`, `http://`
@@ -58,10 +58,12 @@ stages 1-4 in 0.13).
   `improv-gui https://…` runs the web GUI's worksheet app natively
   (`crates/gui/src/served.rs`, shared with gui_web by `#[path]`), greyed
   by `/v1/capabilities`; `improv-tui https://…` has its own served grid.
-  Both follow `/v1/changes`. pg_improv 0.15.0 NOTIFYs `improv_<model id>,
-  '<model_version.tx>'` at commit (version moved, or results written);
-  storage_pg's `Listener` / `Store::listen`, and the GUI and TUI listen
-  for Postgres in place of H9 polling.
+  Both follow `/v1/changes`; the GUI is labeled `server view` (the web
+  GUI's commands, road-to-1.0 I4 for the rest). pg_improv 0.15.0 NOTIFYs
+  `improv_<model id>, '<tx>.<data_gen>'` at commit (`improv.stale.data_gen`
+  moves with inputs applied or results written); storage_pg's `Listener` /
+  `Store::listen`: the GUI and TUI listen for Postgres in place of H9
+  polling, and take others' input cells live when nothing is unsaved.
 - **NEXT:** the COSMIC GUI's remote service (step 4, not started: its
   window holds a whole Model + Snapshot and sends whole-structure
   `Restructure`s, which `/v1` has no route for); road-to-1.0 I4 (the full

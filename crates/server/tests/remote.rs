@@ -1,8 +1,9 @@
 //! The native remote model service (`improv_client::remote`) against a
 //! real `improv-server` binary: over HTTPS with a private CA, as two
 //! principals under stored Cedar policies, one of whom sees only part of
-//! the model; its change stream, filtered per subscriber; and the refusals
-//! a front end must show.
+//! the model; its change stream, filtered per subscriber; the refusals a
+//! front end must show; and a DuckDB-hosted model (`duckdb:FILE?model=`),
+//! which only the server may open while it runs.
 
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -481,6 +482,110 @@ fn the_stream_reconnects_after_a_restart() {
         Some(WireValue::Number(1100.0))
     );
     std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A DuckDB-hosted model through the server: the desktop clients' way to
+/// one. Ann (analyst, without WidgetB) reads Revenue as the server
+/// computes it, without WidgetB; Ed's edit reaches her stream, filtered;
+/// her own edit is refused; and the file, which the server holds, has
+/// Ed's edit once it stops.
+#[test]
+fn a_duckdb_hosted_model_through_the_server() {
+    let dir = scratch("duckdb");
+    let file = dir.join("plans.duckdb");
+    let target = format!("duckdb:{}?model=plan", file.display());
+    {
+        let mut s = improv_store::Store::open(&target).unwrap();
+        s.save_model(&revenue_model()).unwrap();
+        s.save_policies(Some((POLICIES, GROUPS))).unwrap();
+    }
+    let srv = serve_at_target(&dir, &target);
+    let url = format!("http://{}", srv.addr);
+    let mut ann = connect(&url, "ann-secret");
+    let st = structure(&mut ann);
+    let products: Vec<&str> = st.categories[1]
+        .items
+        .iter()
+        .map(|i| i.name.as_str())
+        .collect();
+    assert_eq!(products, ["WidgetA"]);
+    assert!(st.measure(100).is_none(), "Price is hidden");
+    let rev = window(&mut ann, 102);
+    assert_eq!(rev.cells.len(), 2);
+    assert_eq!(
+        value(&rev, &[(1, 10), (2, 20)]),
+        Some(WireValue::Number(1000.0))
+    );
+    wait_live(&ann);
+    let edit = |v: f64| {
+        Request::Edit(EditReq {
+            edits: vec![CellEdit {
+                measure: 101,
+                at: vec![(1, 10), (2, 20)],
+                value: Some(WireValue::Number(v)),
+            }],
+        })
+    };
+    let mut ed = connect(&url, "ed-secret");
+    assert!(matches!(
+        ask(&mut ed, edit(150.0), &mut Vec::new()),
+        Event::Reply(_, Ok(_))
+    ));
+    changed(&mut ann, |c| {
+        assert!(c.cells.iter().all(|x| !x.at.contains(&(2, 21))));
+        c.cells
+            .iter()
+            .any(|x| x.measure == 102 && x.value == Some(WireValue::Number(1500.0)))
+    });
+    assert!(matches!(
+        ask(&mut ann, edit(1.0), &mut Vec::new()),
+        Event::Reply(_, Err(_))
+    ));
+    drop(srv);
+    let m = improv_store::Store::open(&target)
+        .unwrap()
+        .load_model()
+        .unwrap();
+    let at = Coordinate::from_pairs([(CategoryId(1), ItemId(10)), (CategoryId(2), ItemId(20))]);
+    assert_eq!(m.input(MeasureId(101), &at), Some(&Value::Number(150.0)));
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// [`serve`] on any store target (a `duckdb:` one: the server opens it).
+fn serve_at_target(dir: &Path, target: &str) -> Server {
+    let tokens = dir.join("tokens");
+    std::fs::write(
+        &tokens,
+        "ann:write:ann-secret\ned:write:ed-secret\nro:read:ro-secret\n",
+    )
+    .unwrap();
+    let port = {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        l.local_addr().unwrap().port()
+    };
+    let addr = format!("127.0.0.1:{port}");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_improv-server"))
+        .arg(target)
+        .arg(&addr)
+        .env("IMPROV_API_TOKEN_FILE", &tokens)
+        .env_remove("IMPROV_API_TOKEN")
+        .env_remove("IMPROV_API_TOKENS")
+        .stderr(Stdio::piped())
+        .stdout(Stdio::null())
+        .stdin(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut lines = BufReader::new(child.stderr.take().unwrap()).lines();
+    let mut seen = String::new();
+    for l in lines.by_ref().map_while(Result::ok) {
+        if l.starts_with("improv-server listening on") {
+            std::thread::spawn(move || lines.for_each(drop));
+            return Server { child, addr };
+        }
+        seen.push_str(&l);
+    }
+    let _ = child.wait();
+    panic!("improv-server did not start: {seen}");
 }
 
 /// [`serve`] at a given address.
