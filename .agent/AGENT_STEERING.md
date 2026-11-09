@@ -31,7 +31,7 @@ stages 1-4 in 0.13).
   storage_pg/store `load_policies`/`save_policies`/`policy_version` call
   them. `tests/policies.sh` in `ci/pg_improv.sh`. Measured numbers are in
   the design note's Performance section.
-- **Stage 4 DONE** (on main, `7e13c5e`..`569a933`, for 0.14): `improv_storage_pg::tls`, the
+- **Stage 4 DONE** (released in 0.14.0, `7e13c5e`..`569a933`): `improv_storage_pg::tls`, the
   one Postgres transport (storage_pg and storage_sql): rustls/ring,
   `tokio-postgres-rustls`, `rustls-platform-verifier`; sslmode disable/
   prefer/require/verify-ca/verify-full and sslrootcert parsed by Improv;
@@ -51,6 +51,15 @@ stages 1-4 in 0.13).
 The 1.0.0 plan is `docs/reviews/2026-10-21-road-to-1.0.md`; its "1.0.0 exit
 criteria" are the bar. Mark tasks done there as they land.
 
+- **Released 2026-11-08:** tag `v0.14.0` = `de14c77`: Cedar stage 4 (TLS to
+  Postgres with verified certificates and sslmode; improv-server HTTPS, and
+  no tokens over plain HTTP off loopback without `IMPROV_ALLOW_PLAIN=1`),
+  the owner-check REVOKE fix, the COSMIC movie. pg_improv 0.14.0's update
+  from 0.13.0 changes only its version. 43 assets (cosign `verify-blob`
+  OK), PGXN 0.14.0, ghcr `improv:0.14.0`; registry PR
+  duckdb/community-extensions#3568 opened by hand (`COMMUNITY_EXT_PAT`
+  unset; #3551 merged). No announcement (`PGORG_*` unset). Stages 5-7, web
+  accessibility and the COSMIC Windows blockers are in progress for 0.15.
 - **Released 2026-11-06:** tag `v0.13.0` = `6aa70f7` (re-pointed from
   `b5f3526` before anything published: the first run's attest step looked
   for pg_improv's SBOM under its pre-pgrx-0.19 name; fixed in 84974bf, and
