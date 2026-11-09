@@ -27,11 +27,13 @@ pub fn start() {
     // One random session per page load: undo is per session.
     let session = format!("{:016x}", (js_sys::Math::random() * 2f64.powi(53)) as u64);
     wasm_bindgen_futures::spawn_local(async move {
+        let mirror = canvas.clone();
         let started = eframe::WebRunner::new()
             .start(
                 canvas,
                 eframe::WebOptions::default(),
                 Box::new(move |cc| {
+                    crate::bridge::install(&cc.egui_ctx, &mirror);
                     let ctx = cc.egui_ctx.clone();
                     let repaint: Rc<dyn Fn()> = Rc::new(move || ctx.request_repaint());
                     let svc = net::Remote::new(session, repaint);

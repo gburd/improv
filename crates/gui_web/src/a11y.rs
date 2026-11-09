@@ -20,8 +20,8 @@ pub struct El {
     pub attrs: Vec<(&'static str, String)>,
     /// Text content (a label's words), shown to the accessibility tree.
     pub text: Option<String>,
-    /// The node takes focus and clicks: `tabindex=-1`, so the screen
-    /// reader can move onto it, and its activation becomes a click.
+    /// The node takes the focus: `tabindex=-1`, so a screen reader can
+    /// move onto it. (Any element's activation is sent as a click.)
     pub active: bool,
     /// A password field: what is typed in it must not be echoed.
     pub secret: bool,
@@ -138,7 +138,12 @@ impl Tree {
 fn element(n: &Node, nodes: &HashMap<NodeId, &Node>) -> El {
     let role = n.role();
     let mut a: Vec<(&'static str, String)> = Vec::new();
-    let aria = aria_role(role);
+    // A label that takes the focus (a window's title) is a heading: a
+    // screen reader says nothing for a focused element with no role.
+    let aria = match role {
+        Role::Label if n.supports_action(Action::Focus) => Some("heading"),
+        _ => aria_role(role),
+    };
     // A name: the label, else what labels it, else (for a control) its value.
     let label = n.label().map(str::to_owned).or_else(|| {
         let by: Vec<&str> = n
@@ -239,7 +244,7 @@ fn element(n: &Node, nodes: &HashMap<NodeId, &Node>) -> El {
         role: aria,
         attrs: a,
         text,
-        active: n.supports_action(Action::Focus) || n.supports_action(Action::Click),
+        active: n.supports_action(Action::Focus),
         secret: role == Role::PasswordInput,
     }
 }
@@ -509,7 +514,7 @@ mod tests {
                 (
                     1,
                     node(Role::Window, |n| {
-                        n.set_children((2..=12).map(NodeId).collect::<Vec<_>>());
+                        n.set_children((2..=13).map(NodeId).collect::<Vec<_>>());
                     }),
                 ),
                 (2, node(Role::Label, |n| n.set_value("Pages"))),
@@ -576,14 +581,24 @@ mod tests {
                     }),
                 ),
                 (12, node(Role::GenericContainer, |_| {})),
+                (
+                    13,
+                    node(Role::Label, |n| {
+                        n.set_value("Price - Worksheet");
+                        n.add_action(Action::Focus);
+                    }),
+                ),
             ],
             1,
         ));
         let el = |i: u64| &t.els[&i];
         assert_eq!(el(2).text.as_deref(), Some("Pages"));
+        assert_eq!(el(2).role, None);
+        assert_eq!(el(13).role, Some("heading"), "a focusable label");
+        assert_eq!(el(13).text.as_deref(), Some("Price - Worksheet"));
         assert_eq!(attr(el(2), "aria-label"), None, "a label is its text");
         assert_eq!(attr(el(3), "aria-disabled"), Some("true"));
-        assert!(el(3).active);
+        assert!(!el(3).active, "clicks, but takes no focus");
         assert_eq!(el(4).role, Some("textbox"));
         assert_eq!(attr(el(4), "aria-label"), Some("Pages"), "labelled by");
         assert_eq!(el(4).text.as_deref(), Some("Tax = 1"));

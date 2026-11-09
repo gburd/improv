@@ -375,7 +375,11 @@ impl<S: ModelService> WebApp<S> {
             .frame(egui::Frame::NONE.fill(LIGHT_GRAY).inner_margin(4.0))
             .show(root, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(&self.status);
+                    // A screen reader hears it change (a polite live region).
+                    let r = ui.label(&self.status);
+                    ui.ctx().accesskit_node_builder(r.id, |n| {
+                        n.set_role(egui::accesskit::Role::Status);
+                    });
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let r = ui.small_button("Model Browser");
                         if r.clicked() {
@@ -432,13 +436,15 @@ impl<S: ModelService> WebApp<S> {
                     .resizable(false)
                     .show(ctx, |ui| {
                         crate::theme::content(ui);
-                        ui.label("The server's access token:");
-                        let r = ui.add(
-                            egui::TextEdit::singleline(&mut token)
-                                .password(true)
-                                .id(egui::Id::unique("token_edit"))
-                                .desired_width(f32::INFINITY),
-                        );
+                        let label = ui.label("The server's access token:");
+                        let r = ui
+                            .add(
+                                egui::TextEdit::singleline(&mut token)
+                                    .password(true)
+                                    .id(egui::Id::unique("token_edit"))
+                                    .desired_width(f32::INFINITY),
+                            )
+                            .labelled_by(label.id);
                         // Before asking for the focus back: a singleline edit
                         // gives it up on Enter.
                         let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
@@ -468,7 +474,8 @@ impl<S: ModelService> WebApp<S> {
     }
 
     fn keys(&mut self, ctx: &egui::Context) {
-        if ctx.memory(|m| m.focused()).is_some() {
+        // A text edit has its own Ctrl+Z; a focused cell or tile does not.
+        if ctx.text_edit_focused() {
             return;
         }
         let cmd = ctx.input(|i| {
@@ -788,7 +795,13 @@ impl<S: ModelService> WebApp<S> {
                                     .find(|x| Some(x.id) == cur)
                                     .map(|x| x.name.clone())
                                     .unwrap_or_default();
-                                let r = egui::ComboBox::from_id_salt(("page", uid, *c))
+                                let cat = self
+                                    .structure
+                                    .category(*c)
+                                    .map(|k| k.name.clone())
+                                    .unwrap_or_default();
+                                let r = ui.name_inputs(format!("{cat} page"), |ui| {
+                                    egui::ComboBox::from_id_salt(("page", uid, *c))
                                     .selected_text(name)
                                     .show_ui(ui, |ui| {
                                         for it in &items {
@@ -800,7 +813,8 @@ impl<S: ModelService> WebApp<S> {
                                                 *pick = Some((*c, it.id));
                                             }
                                         }
-                                    });
+                                    })
+                                });
                                 probe.pages.push(serde_json::json!({
                                     "measure": mname, "x": r.response.rect.center().x, "y": r.response.rect.center().y,
                                 }));
@@ -854,14 +868,52 @@ impl<S: ModelService> WebApp<S> {
             true => ui.interact(resp.rect, resp.id.with("menu"), Sense::click()) | resp,
             false => resp,
         };
-        resp.context_menu(|ui| {
+        resp.widget_info(|| {
+            egui::WidgetInfo::labeled(
+                egui::Role::Button,
+                true,
+                format!("{name} tile, on {from:?}: Enter opens its menu"),
+            )
+        });
+        let menu = |ui: &mut egui::Ui, moves: &mut Vec<(u32, Axis)>, focus: bool| {
+            let mut first = focus;
             for to in [Axis::Rows, Axis::Columns, Axis::Pages] {
-                if to != from && ui.button(format!("Move to {to:?}")).clicked() {
+                if to == from {
+                    continue;
+                }
+                let b = ui.button(format!("Move to {to:?}"));
+                if std::mem::take(&mut first) {
+                    b.request_focus();
+                }
+                if b.clicked() {
                     moves.push((c, to));
                     ui.close();
                 }
             }
+        };
+        resp.context_menu(|ui| menu(ui, moves, false));
+        // The same menu from the keyboard (Enter) or a screen reader's
+        // activation, under the tile; closed, the tile has the focus back.
+        let kb = resp.id.with("keys");
+        let mut open = ui.data(|d| d.get_temp::<bool>(kb)).unwrap_or(false);
+        // (`has_focus` outside `input`: both take egui's context lock.)
+        let focused = resp.has_focus();
+        let asked = ui.input(|i| {
+            (focused && i.key_pressed(egui::Key::Enter))
+                || i.has_accesskit_action_request(resp.id, egui::accesskit::Action::Click)
         });
+        let opened = asked && !open;
+        open |= asked;
+        let was = open;
+        egui::Popup::menu(&resp)
+            .id(kb)
+            .open_bool(&mut open)
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+            .show(|ui| menu(ui, moves, opened));
+        if was && !open {
+            resp.request_focus();
+        }
+        ui.data_mut(|d| d.insert_temp(kb, open));
         resp.rect
     }
 
@@ -1098,7 +1150,8 @@ impl<S: ModelService> WebApp<S> {
                             id,
                             "",
                             span,
-                        );
+                        )
+                        .accessible_name(format!("Formula for {}", x.name));
                         if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                             *commit = Some((x.id, self.formula.1.clone()));
                         }
@@ -1171,7 +1224,10 @@ impl<S: ModelService> WebApp<S> {
                             if r.clicked() {
                                 open_measure = Some(m.id);
                             }
-                            if ui.small_button("rename").clicked() {
+                            let b = ui
+                                .small_button("rename")
+                                .accessible_name(format!("Rename {}", m.name));
+                            if b.clicked() {
                                 prompt = Some((Prompt::RenameMeasure(m.id), m.name.clone()));
                             }
                         });
@@ -1180,13 +1236,22 @@ impl<S: ModelService> WebApp<S> {
                     for c in &self.structure.categories {
                         ui.horizontal(|ui| {
                             ui.label(&c.name);
-                            if ui.small_button("rename").clicked() {
+                            let b = ui
+                                .small_button("rename")
+                                .accessible_name(format!("Rename {}", c.name));
+                            if b.clicked() {
                                 prompt = Some((Prompt::RenameCategory(c.id), c.name.clone()));
                             }
-                            if ui.small_button("+ item").clicked() {
+                            let b = ui
+                                .small_button("+ item")
+                                .accessible_name(format!("Add an item to {}", c.name));
+                            if b.clicked() {
                                 prompt = Some((Prompt::AddItem(c.id), String::new()));
                             }
-                            if ui.small_button("delete").clicked() {
+                            let b = ui
+                                .small_button("delete")
+                                .accessible_name(format!("Delete {}", c.name));
+                            if b.clicked() {
                                 act = Some(Request::DeleteCategory(c.id));
                             }
                         });
@@ -1194,10 +1259,16 @@ impl<S: ModelService> WebApp<S> {
                             ui.horizontal(|ui| {
                                 ui.add_space(16.0);
                                 ui.label(&it.name);
-                                if ui.small_button("rename").clicked() {
+                                let b = ui
+                                    .small_button("rename")
+                                    .accessible_name(format!("Rename {}", it.name));
+                                if b.clicked() {
                                     prompt = Some((Prompt::RenameItem(it.id), it.name.clone()));
                                 }
-                                if ui.small_button("delete").clicked() {
+                                let b = ui
+                                    .small_button("delete")
+                                    .accessible_name(format!("Delete {}", it.name));
+                                if b.clicked() {
                                     act = Some(Request::DeleteItem(it.id));
                                 }
                             });
@@ -1238,11 +1309,13 @@ impl<S: ModelService> WebApp<S> {
             .resizable(false)
             .show(ctx, |ui| {
                 crate::theme::content(ui);
-                let r = ui.add(
-                    egui::TextEdit::singleline(&mut text)
-                        .id(egui::Id::unique("prompt_edit"))
-                        .desired_width(f32::INFINITY),
-                );
+                let r = ui
+                    .add(
+                        egui::TextEdit::singleline(&mut text)
+                            .id(egui::Id::unique("prompt_edit"))
+                            .desired_width(f32::INFINITY),
+                    )
+                    .accessible_name(title);
                 let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
                 go = enter && (r.lost_focus() || r.has_focus());
                 if !r.has_focus() && !r.lost_focus() {

@@ -27,19 +27,26 @@ wasm-bindgen = "=0.2.130"
 wasm-bindgen-futures = "0.4"
 js-sys = "0.3"
 web-sys = { version = "0.3", features = [
+    "CharacterData",
     "console",
     "Document",
     "Element",
+    "Event",
+    "EventTarget",
+    "FocusOptions",
     "Headers",
     "HtmlCanvasElement",
     "HtmlElement",
+    "HtmlInputElement",
     "Location",
+    "Node",
     "ReadableStream",
     "ReadableStreamDefaultReader",
     "Request",
     "RequestCache",
     "RequestInit",
     "Response",
+    "Text",
     "Window",
 ] }
 

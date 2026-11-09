@@ -43,10 +43,14 @@ pub fn assisted(
     let word =
         |t: &str, c: usize| completion::prefix(t, c).map_or(String::new(), |(_, w)| w.to_string());
     let mut accepted = false;
+    // Tab accepts a completion while the list is open; else it moves on
+    // (a keyboard user leaves the field with it).
+    let mut listing = false;
     if ctx.memory(|m| m.has_focus(id)) {
         let at = caret(&ctx, id, text);
         let cands = completion::offer(model, text, at);
         if popup.sync(text, &word(text, at), cands.len()) {
+            listing = true;
             let (up, down, tab, esc) = ui.input_mut(|i| {
                 let mut k = |key| i.consume_key(Modifiers::NONE, key);
                 (
@@ -77,7 +81,7 @@ pub fn assisted(
     let out = egui::TextEdit::singleline(text)
         .id(id)
         .hint_text(hint)
-        .lock_focus(true)
+        .lock_focus(listing)
         .desired_width(f32::INFINITY)
         .layouter(&mut layouter)
         .show(ui);
@@ -110,10 +114,14 @@ pub fn assisted(
 
 /// A formula error under its edit: the message, and the hint dimmed.
 pub fn error_lines(ui: &mut egui::Ui, d: &Diagnostic) {
-    ui.colored_label(
+    let r = ui.colored_label(
         crate::formula_highlight::ERROR_COLOR,
         format!("⚠ {}", d.message),
     );
+    // Announced when it appears.
+    ui.ctx().accesskit_node_builder(r.id, |n| {
+        n.set_role(egui::accesskit::Role::Alert);
+    });
     if let Some(h) = &d.hint {
         ui.label(egui::RichText::new(h).color(crate::theme::DARK_GRAY));
     }
