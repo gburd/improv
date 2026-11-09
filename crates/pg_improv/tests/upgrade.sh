@@ -241,6 +241,16 @@ for from in "$@"; do
 	          'cell_rule','row_visible','cell_name','item_changed','result_written')")" \
 		15 "the policy functions after the update"
 	eq "$(q "SELECT count(*) FROM improv.stale")" "$(q "SELECT count(*) FROM improv.model")" "every model has a stale row after the update"
+	# 0.15.0: live updates. The version trigger and data_gen; an updated
+	# model's commit notifies improv_<id> with '<tx>.<data_gen>'.
+	eq "$(q "SELECT count(*) FROM pg_trigger WHERE tgrelid = 'improv.model_version'::regclass AND tgname = 'version_moved' AND tgenabled = 'A'")" \
+		1 "the version trigger after the update"
+	eq "$(q "SELECT format_type(atttypid, atttypmod) FROM pg_attribute WHERE attrelid = 'improv.stale'::regclass AND attname = 'data_gen'")" \
+		bigint "data_gen after the update"
+	mid=$(q "SELECT id FROM improv.model WHERE name = 'plan'")
+	heard=$("$PG_BIN/psql" -h "$W" -p "$P" -U improv -d t -qAtX -c "LISTEN improv_$mid" \
+		-c "UPDATE improv.model_version SET tx = tx + 1 WHERE model_id = $mid" -c "SELECT 1" 2>&1 | grep -c "notification \"improv_$mid\" with payload \"[0-9]*\.[0-9]*\"" || true)
+	eq "$heard" 1 "an updated model notifies at commit"
 	# From before 0.13.0 the update makes improv.stale, and no model's rows
 	# are vouched for until it recomputes. (The worker's rebuild of the
 	# logical model is a full recompute, which may already have vouched for

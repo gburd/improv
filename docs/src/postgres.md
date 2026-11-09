@@ -111,29 +111,44 @@ grows.
 
 ## Live updates
 
-A client can follow a model without polling. pg_improv sends
-`NOTIFY improv_<model id>, '<version>'` when the transaction commits,
-whenever the model's version (`improv.model_version.tx`) moved in it (a
-`define`, a binding, a mode switch, a save from a `postgres://` model in
-a GUI) and whenever it wrote result rows: the sync worker's apply, a
-`trigger` or `commit` mode recompute, an `improv.recalc`. The payload is
-the version number and nothing else: any role may `LISTEN` on any
-channel, so a notification never carries data. A rolled-back
-transaction or savepoint sends nothing, and a prepared transaction
-sends nothing (Postgres refuses to `PREPARE` one that has notified).
+A client can follow a model without polling. When a transaction
+commits, pg_improv sends `NOTIFY improv_<model id>, '<tx>.<data>'` for
+each model it changed:
+
+- **The channel** is `improv_` and the model's id (`improv.model.id`),
+  not its name: a name is any text, a channel an identifier.
+- **`<tx>`** is the model's version, `improv.model_version.tx`. It moves
+  with a structural change (a `define`, a binding, a mode switch) and
+  with every save from a `postgres://` model in a GUI or the CLI.
+- **`<data>`** is the model's data generation, `improv.stale.data_gen`.
+  It moves when the transaction applied the model's inputs or wrote its
+  results: the sync worker's apply, a `trigger` or `commit` mode
+  recompute, an `improv.recalc` that changed a row.
+- **The payload is the two numbers and nothing else.** Any role may
+  `LISTEN` on any channel, so a notification never carries data, names
+  or cells, only that something changed (see the access policies'
+  [threat model](https://codeberg.org/gregburd/improv/src/branch/main/docs/reviews/2026-11-02-cedar-policies.md#versions-and-change-timing)).
+- A rolled-back transaction or savepoint sends nothing, and so does a
+  prepared transaction (Postgres refuses to `PREPARE` one that has
+  notified).
 
 ```sql
 SELECT id FROM improv.model WHERE name = 'plan';   -- 1
 LISTEN improv_1;
--- Asynchronous notification "improv_1" with payload "12" received ...
+-- Asynchronous notification "improv_1" with payload "12.40" received ...
 ```
 
 On a notification, re-read what you show through your normal path: the
 result tables and `improv.cells` apply the model's [access
 policies](#access-policies), so each listener sees only what it may.
 `improv-gui` and `improv-tui` on a `postgres://` model listen this way, on
-a second connection, and offer to reload when another program's change
-moves the version (their own saves notify too, and are recognized).
+a second connection. When `<tx>` moves (another program changed the
+structure or saved), they offer to reload. When `<data>` moves (an `UPDATE`
+of a bound table, applied by the worker), they re-read the input cells,
+at most once a second, and take in the ones that differ, recomputed,
+when nothing in the window is unsaved; with an edit unsaved they wait,
+and never overwrite it. A re-read of a 100,000-cell bound model takes
+about 220 ms, off the window's thread.
 
 ## Several rows per coordinate
 

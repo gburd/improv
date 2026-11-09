@@ -1757,10 +1757,11 @@ fn a_listener_hears_its_models_notifications() {
     let (conn, _) = split_model_url(&url).unwrap();
     let mut l = Listener::connect(&conn, s.model_id).unwrap();
     let wait = std::time::Duration::from_millis(200);
-    assert_eq!(l.wait(wait).unwrap(), Vec::<i64>::new());
+    assert_eq!(l.wait(wait).unwrap(), Vec::<Heard>::new());
     let me = format!("improv_{}", s.model_id);
     c.batch_execute(&format!(
-        "BEGIN; NOTIFY {me}, '7'; NOTIFY improv_0, '9'; NOTIFY {me}, 'x'; NOTIFY {me}, '8'; COMMIT"
+        "BEGIN; NOTIFY {me}, '7.2'; NOTIFY improv_0, '9.9'; NOTIFY {me}, 'x'; NOTIFY {me}, '8'; \
+         NOTIFY {me}, '8.x'; COMMIT"
     ))
     .unwrap();
     let mut got = Vec::new();
@@ -1770,7 +1771,8 @@ fn a_listener_hears_its_models_notifications() {
             break;
         }
     }
-    assert_eq!(got, [7, 8]);
+    let h = |tx, data| Heard { tx, data };
+    assert_eq!(got, [h(7, 2), h(8, 0)]);
     // Killed: the next wait says so.
     let pid: i32 = l
         .client

@@ -183,22 +183,50 @@ where
 /// loop wakes to say so (see [`run`]).
 static WAKE: AtomicBool = AtomicBool::new(false);
 
-/// For a Postgres model whose database notifies (pg_improv 0.15+), its
-/// moved versions from a thread on a second connection; `None` otherwise.
-fn listen(path: &str) -> Option<mpsc::Receiver<i64>> {
+/// For a Postgres model whose database notifies (pg_improv 0.15+), what
+/// a thread on a second connection hears ([`app::Heard`]); `None`
+/// otherwise. A data move re-reads the model's inputs on that thread, at
+/// most once a second ([`app::REREAD`]), coalescing what came between.
+fn listen(path: &str) -> Option<mpsc::Receiver<app::Heard>> {
     let mut l = Store::open(path).ok()?.listen(path).ok()??;
     let (tx, rx) = mpsc::channel();
+    let path = path.to_owned();
     std::thread::Builder::new()
         .name("improv-tui-listen".into())
+        .stack_size(improv_engine::dataflow::ENGINE_STACK)
         .spawn(move || {
+            use std::time::{Duration, Instant};
+            let (mut data, mut due) = (None::<i64>, None::<Instant>);
+            let mut last = Instant::now() - app::REREAD;
             // Ends with its connection, or when the session drops `rx`
             // (the next send fails: one comes every 5 s at the latest).
-            while let Ok(vs) = l.wait(std::time::Duration::from_secs(5)) {
-                if !vs.is_empty() {
+            loop {
+                let wait = due.map_or(Duration::from_secs(5), |d| {
+                    d.saturating_duration_since(Instant::now())
+                });
+                let Ok(heard) = l.wait(wait) else { return };
+                let mut out: Vec<app::Heard> = Vec::new();
+                for h in heard {
+                    out.push(app::Heard::Version(h.tx));
+                    if data.replace(h.data) != Some(h.data) && data.is_some() && due.is_none() {
+                        due = Some((last + app::REREAD).max(Instant::now()));
+                    }
+                }
+                if due.is_some_and(|d| d <= Instant::now()) {
+                    (due, last) = (None, Instant::now());
+                    let read = Store::open(&path).and_then(|mut s| {
+                        let m = s.load_model()?;
+                        Ok((s.loaded_tx(), m.inputs, s.take_save_token()))
+                    });
+                    if let Ok((Some(t), cells, token)) = read {
+                        out.push(app::Heard::Inputs(t, Box::new((cells, token))));
+                    }
+                }
+                if !out.is_empty() {
                     WAKE.store(true, Ordering::SeqCst);
                 }
-                for v in vs.into_iter().chain([i64::MIN]) {
-                    if tx.send(v).is_err() {
+                for h in out.into_iter().chain([app::Heard::Alive]) {
+                    if tx.send(h).is_err() {
                         return;
                     }
                 }
@@ -215,19 +243,27 @@ fn listen(path: &str) -> Option<mpsc::Receiver<i64>> {
 /// the read decides); when the listener has stopped, on every check again.
 fn outside_save(app: &mut App, path: &str) -> Option<i64> {
     let mine = app.save_token.tx()?;
-    if let Some(rx) = &app.heard {
+    if app.heard.is_some() {
         let mut moved = false;
-        loop {
-            match rx.try_recv() {
-                // i64::MIN: the listener's heartbeat.
-                Ok(v) => moved |= v != i64::MIN && v != mine,
-                Err(mpsc::TryRecvError::Empty) if !moved => return None,
-                Err(mpsc::TryRecvError::Empty) => break,
-                Err(mpsc::TryRecvError::Disconnected) => {
-                    app.heard = None;
-                    break;
-                }
+        let mut inputs = None;
+        let gone = loop {
+            match app.heard.as_ref().map(mpsc::Receiver::try_recv) {
+                Some(Ok(app::Heard::Version(v))) => moved |= v != mine,
+                Some(Ok(app::Heard::Inputs(t, b))) => inputs = Some((t, b.0, b.1)),
+                Some(Ok(app::Heard::Alive)) => {}
+                Some(Err(mpsc::TryRecvError::Disconnected)) | None => break true,
+                Some(Err(mpsc::TryRecvError::Empty)) => break false,
             }
+        };
+        if let Some((t, cells, token)) = inputs {
+            // Another program's input cells: taken in when nothing here is
+            // unsaved; else the reload message below says so.
+            moved |= !app.take_inputs(t, cells, token);
+        }
+        if gone {
+            app.heard = None;
+        } else if !moved {
+            return None;
         }
     }
     let hw = Store::open(path).and_then(|mut s| s.tx_high_water()).ok()?;
@@ -1526,7 +1562,8 @@ mod tests {
             c.batch_execute(
                 "CREATE OR REPLACE FUNCTION public.improv_test_version_moved() RETURNS trigger
                    LANGUAGE plpgsql AS $$ BEGIN
-                     PERFORM pg_notify('improv_' || NEW.model_id, NEW.tx::text); RETURN NULL;
+                     PERFORM pg_notify('improv_' || NEW.model_id, NEW.tx::text || '.0');
+                     RETURN NULL;
                    END $$;
                  CREATE TRIGGER version_moved AFTER INSERT OR UPDATE OF tx
                    ON improv.model_version FOR EACH ROW
@@ -1563,6 +1600,44 @@ mod tests {
         assert_eq!(
             a.status.as_deref(),
             Some("another program saved this model: press R to reload it")
+        );
+        // Another program's input cell (a data move, as pg_improv's worker
+        // sends it): taken in, no reload asked, once nothing is unsaved.
+        run_events(&mut a, &url, chars("RR")).unwrap();
+        assert_eq!(a.status.as_deref(), Some("reverted to the saved model"));
+        let mid: i64 = c
+            .query_one(
+                "SELECT id FROM improv.model WHERE name = $1",
+                &[&format!("tuinotify_{}", std::process::id())],
+            )
+            .unwrap()
+            .get(0);
+        let tx: i64 = c
+            .query_one(
+                "SELECT tx FROM improv.model_version WHERE model_id = $1",
+                &[&mid],
+            )
+            .unwrap()
+            .get(0);
+        c.batch_execute(&format!(
+            "UPDATE improv.cell SET value = '77'::jsonb WHERE model_id = {mid} AND measure_id = 101 \
+               AND coord = '{{\"1\": 10, \"2\": 20}}'::jsonb;
+             SELECT pg_notify('improv_{mid}', '{tx}.1'); SELECT pg_notify('improv_{mid}', '{tx}.2')"
+        ))
+        .unwrap();
+        let mut took = false;
+        for _ in 0..150 {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            run_events(&mut a, &url, vec![Ok(Event::FocusGained)]).unwrap();
+            if a.grid.value_at(0, 0) == Some(77.0) {
+                took = true;
+                break;
+            }
+        }
+        assert!(took, "another program's cell came in: {:?}", a.status);
+        assert_eq!(
+            a.status.as_deref(),
+            Some("1 cell changed by another program")
         );
         // The listener killed: back to the probe on each key.
         c.execute(

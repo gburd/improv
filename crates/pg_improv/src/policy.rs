@@ -181,7 +181,11 @@ CREATE TABLE improv.stale (
     model_id  bigint PRIMARY KEY REFERENCES improv.model(id) ON DELETE CASCADE,
     items     bigint NOT NULL DEFAULT 0,
     gen       bigint NOT NULL DEFAULT 1,
-    clean_gen bigint
+    clean_gen bigint,
+    -- 0.15: moves on with every transaction that applies a model's inputs
+    -- or writes its results (src/lib.rs, data_moved): the second number of
+    -- its NOTIFY payload.
+    data_gen  bigint NOT NULL DEFAULT 0
 );
 INSERT INTO improv.stale (model_id) SELECT id FROM improv.model;
 ALTER TABLE improv.stale ENABLE ROW LEVEL SECURITY;

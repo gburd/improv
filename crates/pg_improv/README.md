@@ -302,10 +302,11 @@ table above, and `tests/logical.sh` checks crash recovery.
 | Failure mode | A failing recompute fails the writer's statement | A failing recompute aborts the COMMIT, naming the model | A stuck worker retains WAL (bounded by `max_slot_wal_keep_size`) | Errors are yours to handle |
 | Best for | Small, read-your-writes models | Transactional results from many-statement transactions; tables you can't add triggers to | Busy tables, replicas | Bulk loads, migrations, `manual` mode |
 
-**Live updates.** Whatever the mode, a transaction that wrote a model's
-results or moved its `improv.model_version` sends, at its commit,
-`NOTIFY improv_<model id>, '<model_version.tx>'`. The payload is the
-number only (any role may `LISTEN` on any channel); a rolled-back
+**Live updates.** Whatever the mode, a transaction that applied a
+model's inputs, wrote its results or moved its `improv.model_version`
+sends, at its commit, `NOTIFY improv_<model id>, '<tx>.<data_gen>'`
+(`improv.model_version.tx`, `improv.stale.data_gen`). The payload is the
+two numbers only (any role may `LISTEN` on any channel); a rolled-back
 transaction or savepoint, and a prepared one, send nothing. A listener
 re-reads through the filtered read path, which applies the model's
 policies. `tests/logical.sh` section 23 checks every source.

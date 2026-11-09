@@ -289,9 +289,12 @@ loops.
 
 ## Live updates
 
-**Postgres.** pg_improv sends `NOTIFY improv_<model id>, '<version>'`
-when `improv.model_version` moves and when the sync worker commits result
-changes. The channel is the model's numeric id (`improv.model.id`), not
+**Postgres.** pg_improv sends `NOTIFY improv_<model id>, '<tx>.<data>'`
+at the commit of a transaction that moved `improv.model_version.tx` (a
+structural change, a store's save) or applied the model's inputs or
+wrote its results (`improv.stale.data_gen`: the sync worker, trigger and
+commit modes, `recalc`). Both are numbers: the payload carries nothing
+else. The channel is the model's numeric id (`improv.model.id`), not
 its name: a model name is any text, and a channel is an identifier
 (unquoted, folded to lower case, at most 63 bytes), so names would need
 quoting rules every client gets right, could collide after folding, and
@@ -885,25 +888,35 @@ Each stage lands green on its own (fmt, clippy, tests, docs, CHANGELOG).
   and redo on the server, a masked token prompt; it polls the service
   every 100 ms, so changes redraw without a key.
 - **NOTIFY (pg_improv 0.15.0).** `improv_<model id>` (the id: a name is
-  not a safe identifier), payload `model_version.tx`. Sources: a row
-  trigger `version_moved` on `improv.model_version` (ENABLE ALWAYS), the
-  worker's `record` when it wrote rows, and `trigger::recompute` (trigger
-  and commit modes, `recalc`) when it wrote rows. Queued per transaction
-  and sent by `Async_Notify` in the transaction callback at
-  `PRE_COMMIT`, once per model with its last version; a rolled-back
-  savepoint takes its own back, and a prepared transaction sends none
-  (Postgres refuses `PREPARE` after a `NOTIFY`). A worker or recompute
-  notification carries the unchanged version, so an owner GUI cannot
-  tell it from its own save's echo: the desktop clients act on version
-  moves only (H9's meaning, pushed instead of polled), and result
-  readers (psql, dashboards) use the rest.
+  not a safe identifier), payload `<tx>.<data_gen>`. `data_gen` is a new
+  column of `improv.stale` (the extension's own row per model, which the
+  worker's transaction already writes; no new lock order), moved by
+  `data_moved`: the worker's `record` for every batch applied or
+  rebuild, the trigger-mode statement, the commit-mode recompute, and
+  `trigger::recompute` when it wrote rows (`recalc`). `tx` moves by the
+  row trigger `version_moved` on `improv.model_version` (ENABLE ALWAYS).
+  Queued per transaction and sent by `Async_Notify` in the transaction
+  callback at `PRE_COMMIT`, once per model with its last pair; a
+  rolled-back savepoint takes its own back, and a prepared transaction
+  sends none (Postgres refuses `PREPARE` after a `NOTIFY`).
 - **LISTEN.** `improv_storage_pg::Listener` is a second connection;
   `PgModelStore::listen` returns it only when the database has the
   `version_moved` trigger, so a plain catalog or an older pg_improv is
   polled as before. The GUI's listener thread wakes the frame and
   replaces the two-second probe; the TUI's sets a wake flag its loop
-  turns into an event, so "another program saved" shows without a key.
-  Both fall back to polling when the listener's connection dies.
+  turns into an event, so news shows without a key. A `tx` the client
+  did not save at is H9 (the Reload panel; the TUI's message). A moved
+  `data_gen` re-reads the model through the store's load, at most once a
+  second (later notifications coalesce into the next read), off the UI
+  thread, and when the read is at the client's own version and nothing
+  is unsaved, applies the input cells that differ through the engine and
+  takes the read's save token; its own save's echo diffs to nothing, so
+  echoes need no telling apart. With an edit unsaved it waits, and never
+  overwrites. Measured (release, PG 17, werk, medians of 7): the re-read
+  and diff of the sample model (100 bound cells) 8 ms; of a 100k-cell
+  bound model 218 ms (load 165 ms), under the 300 ms bar, so it re-reads
+  the whole model rather than the relations the worker touched. Both
+  fall back to polling when the listener's connection dies.
 - **Not done.** The COSMIC GUI's remote service; filtered deltas over
   Postgres (a listener re-reads); per-principal versions (option b).
 

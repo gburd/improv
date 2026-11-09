@@ -501,12 +501,16 @@ pub struct ImprovApp {
     probed_at: f64,
     outside: Option<(i64, bool)>,
     /// A Postgres model's change notifications (pg_improv 0.15+), from a
-    /// thread on a second connection ([`Self::listen`]): each moved
-    /// version, in place of the [`PROBE_SECS`] probe. `None` for a Mentat
-    /// file, or once the thread stopped (then the probe again).
-    heard: Option<mpsc::Receiver<i64>>,
+    /// thread on a second connection ([`Self::listen`]), in place of the
+    /// [`PROBE_SECS`] probe. `None` for a Mentat file, or once the thread
+    /// stopped (then the probe again).
+    heard: Option<mpsc::Receiver<Option<improv_store::Heard>>>,
     /// [`Self::listen`] has run for this store (it tries once).
     listened: bool,
+    /// The data generation last heard, and the re-read of the inputs it
+    /// asks for when it moves ([`Self::take_inputs`]).
+    data_seen: Option<i64>,
+    reread: Reread,
     /// A CSV import waiting for its "Importing…" status to be painted (the
     /// count of frames shown since it was asked for): the import and its
     /// full save block the UI thread for seconds on a large model.
@@ -1805,6 +1809,8 @@ impl ImprovApp {
             outside: None,
             heard: None,
             listened: false,
+            data_seen: None,
+            reread: Reread::default(),
             queued_import: None,
             desk: egui::vec2(INITIAL_WINDOW[0], INITIAL_WINDOW[1]),
         };
@@ -3714,29 +3720,15 @@ impl ImprovApp {
     }
 
     /// H9: look for another writer's save, and offer Reload when there is
-    /// a new one: when a Postgres model's notification arrives
-    /// ([`Self::listen`]), else every [`PROBE_SECS`] (egui time `now`).
+    /// a new one: when a Postgres model's notification says its version
+    /// moved ([`Self::listen`]), else every [`PROBE_SECS`] (egui time
+    /// `now`). A notification that its data moved re-reads the inputs, at
+    /// most once a [`REREAD_SECS`], and applies what differs
+    /// ([`Self::take_inputs`]).
     fn probe_store(&mut self, now: f64) {
-        if let Some(rx) = &self.heard {
-            let mut heard = Vec::new();
-            let gone = loop {
-                match rx.try_recv() {
-                    Ok(v) => heard.push(v),
-                    Err(mpsc::TryRecvError::Empty) => break false,
-                    Err(mpsc::TryRecvError::Disconnected) => break true,
-                }
-            };
-            // A version this window did not save at is another writer's
-            // (i64::MIN is the thread's heartbeat). Probe now, or once the
-            // save in flight lands.
-            let mine = self.save_token.tx();
-            if heard.iter().any(|v| *v != i64::MIN && Some(*v) != mine) {
-                self.probed_at = f64::NEG_INFINITY;
-            }
-            if gone {
-                // The listener stopped: back to polling.
-                self.heard = None;
-            } else if self.probed_at != f64::NEG_INFINITY {
+        if self.heard.is_some() {
+            self.follow_notifications(now);
+            if self.heard.is_some() && self.probed_at != f64::NEG_INFINITY {
                 return;
             }
         }
@@ -3752,43 +3744,184 @@ impl ImprovApp {
         }
     }
 
+    /// Take in the listener's news: a version this window did not save
+    /// at asks for the probe (`probed_at` = -inf); a data move asks for a
+    /// re-read of the inputs, run off the UI thread when one is due, and
+    /// its answer is applied.
+    fn follow_notifications(&mut self, now: f64) {
+        let Some(rx) = &self.heard else { return };
+        let mine = self.save_token.tx();
+        let mut moved = false;
+        let gone = loop {
+            match rx.try_recv() {
+                Ok(Some(h)) => {
+                    moved |= Some(h.tx) != mine;
+                    if self.data_seen.replace(h.data) != Some(h.data) {
+                        self.reread.wanted = true;
+                    }
+                }
+                Ok(None) => {}
+                Err(mpsc::TryRecvError::Empty) => break false,
+                Err(mpsc::TryRecvError::Disconnected) => break true,
+            }
+        };
+        if moved {
+            self.probed_at = f64::NEG_INFINITY;
+        }
+        if gone {
+            // The listener stopped: back to polling.
+            self.heard = None;
+        }
+        // A re-read that came back.
+        let done = self.reread.running.as_ref().map(|r| r.try_recv());
+        match done {
+            Some(Ok(read)) => {
+                self.reread.running = None;
+                if let Some((tx, cells, token)) = read {
+                    if !self.take_inputs(tx, cells, token) && self.outside.is_none() {
+                        // Not now (an edit unsaved, a save running, our own
+                        // save moved the version since): again later.
+                        self.reread.wanted = true;
+                    }
+                }
+            }
+            Some(Err(mpsc::TryRecvError::Disconnected)) => self.reread.running = None,
+            _ => {}
+        }
+        // One due: once a REREAD_SECS, never with a Reload panel up.
+        let due = self.reread.wanted
+            && self.reread.running.is_none()
+            && self.outside.is_none()
+            && now - self.reread.last >= REREAD_SECS;
+        if due {
+            self.reread.wanted = false;
+            self.reread.last = now;
+            let (tx, rx) = mpsc::channel();
+            let db = self.db.clone();
+            let wake = self.reread.wake.clone();
+            let spawned = std::thread::Builder::new()
+                .name("improv-gui-reread".into())
+                .stack_size(improv_engine::dataflow::ENGINE_STACK)
+                .spawn(move || {
+                    let read = Store::open(&db).and_then(|mut s| {
+                        let m = s.load_model()?;
+                        Ok((s.loaded_tx(), m.inputs, s.take_save_token()))
+                    });
+                    let _ = tx.send(match read {
+                        Ok((Some(t), cells, token)) => Some((t, cells, token)),
+                        _ => None,
+                    });
+                    if let Some(w) = wake {
+                        w();
+                    }
+                });
+            if spawned.is_ok() {
+                self.reread.running = Some(rx);
+            }
+        }
+    }
+
+    /// Another program changed this model's input cells (SQL on a bound
+    /// table, through the sync worker or a trigger): `cells` are its
+    /// inputs as re-read at version `tx`, with that read's save `token`.
+    /// When the structure is this window's (`tx` is its save token's) and
+    /// nothing here is unsaved, apply the cells that differ (through the
+    /// engine, as an edit: no undo step, no save), take the read's token
+    /// (it knows those cells), and say so; this window's own save diffs to
+    /// nothing. Else nothing changes, and `false` says so: an unsaved edit
+    /// is never overwritten.
+    fn take_inputs(&mut self, tx: i64, cells: Inputs, token: improv_store::SaveToken) -> bool {
+        let busy = self.saving.is_some()
+            || self.dirty
+            || !self.unsaved.is_empty()
+            || self.loading.is_some()
+            || self.building.is_some()
+            || self.outside.is_some();
+        if busy || Some(tx) != self.save_token.tx() {
+            return false;
+        }
+        let mut diff: Vec<(MeasureId, improv_core_model::Coordinate, Option<Value>)> = cells
+            .iter()
+            .filter(|(k, v)| self.model.inputs.get(*k) != Some(*v))
+            .map(|((m, at), v)| (*m, at.clone(), Some(v.clone())))
+            .collect();
+        diff.extend(
+            (self.model.inputs.keys())
+                .filter(|k| !cells.contains_key(*k))
+                .map(|(m, at)| (*m, at.clone(), None)),
+        );
+        self.save_token = token;
+        if diff.is_empty() {
+            return true;
+        }
+        let n = diff.len();
+        let edits: Vec<improv_engine::session::Edit> = diff
+            .iter()
+            .map(|(m, at, v)| improv_engine::session::Edit {
+                measure: *m,
+                coord: encode_coord(at),
+                value: self
+                    .model
+                    .measures
+                    .get(m)
+                    .zip(v.as_ref())
+                    .and_then(|(x, v)| improv_engine::session::input_cell(x.value_type, v)),
+            })
+            .collect();
+        for (m, at, v) in diff {
+            self.write_input(m, at, v);
+        }
+        let applied = match &mut self.engine {
+            Some(engine) => {
+                self.snapshot = Snapshot::default();
+                engine.apply(edits).map(|s| self.snapshot = s).is_ok()
+            }
+            None => true,
+        };
+        if !applied {
+            // A fresh engine agrees with the model.
+            self.rebuild_engine();
+        }
+        self.status = format!("{} changed by another program", plural(n, "cell"));
+        true
+    }
+
     /// For a Postgres model, follow its notifications on a thread of its
     /// own (a second connection), waking `ctx` for each; the probe then
-    /// runs only when one arrives. Nothing for a Mentat file, or when the
-    /// listening connection cannot be made (the probe polls, as before).
+    /// runs only when the version moves. Nothing for a Mentat file, or
+    /// when the listening connection cannot be made (the probe polls, as
+    /// before).
     fn listen(&mut self, ctx: &egui::Context) {
         if self.listened || !improv_store::is_postgres(&self.db) {
             return;
         }
         self.listened = true;
+        let c = ctx.clone();
+        self.reread.wake = Some(Arc::new(move || c.request_repaint()));
         let listener = Store::open(&self.db).and_then(|mut s| s.listen(&self.db));
         let Ok(Some(mut l)) = listener else {
-            // Not again each frame: this model is polled.
-            self.heard = None;
-            self.listened = true;
+            // This model is polled.
             return;
         };
         let (tx, rx) = mpsc::channel();
         let ctx = ctx.clone();
         let spawned = std::thread::Builder::new()
             .name("improv-gui-listen".into())
-            .spawn(move || loop {
-                // Ends when the window goes (the receiver) or the
-                // connection does; a timeout checks the first.
-                match l.wait(std::time::Duration::from_secs(5)) {
-                    Ok(vs) => {
-                        for v in vs {
-                            if tx.send(v).is_err() {
-                                return;
-                            }
+            .spawn(move || {
+                // Ends when the window goes (the receiver: a `None` every
+                // 5 s at the latest) or the connection does.
+                while let Ok(heard) = l.wait(std::time::Duration::from_secs(5)) {
+                    let any = !heard.is_empty();
+                    for h in heard.into_iter().map(Some).chain([None]) {
+                        if tx.send(h).is_err() {
+                            return;
                         }
+                    }
+                    if any {
                         ctx.request_repaint();
                     }
-                    Err(_) => return ctx.request_repaint(),
                 }
-                if tx.send(i64::MIN).is_err() {
-                    return;
-                }
+                ctx.request_repaint();
             });
         if spawned.is_ok() {
             self.heard = Some(rx);
@@ -3805,6 +3938,10 @@ impl ImprovApp {
         self.probe_store(now);
         if !self.db.is_empty() && self.heard.is_none() {
             ctx.request_repaint_after(std::time::Duration::from_secs_f64(PROBE_SECS));
+        } else if self.reread.wanted {
+            // A re-read waits out its REREAD_SECS.
+            let left = (self.reread.last + REREAD_SECS - now).max(0.05);
+            ctx.request_repaint_after(std::time::Duration::from_secs_f64(left));
         }
         let Some((hw, true)) = self.outside else {
             return;
@@ -4582,6 +4719,28 @@ fn full_sizing() -> bool {
 }
 
 /// Set (`Some`) or clear the input cell `measure` at `at` in `model`.
+/// A model's input cells.
+type Inputs = HashMap<(MeasureId, improv_core_model::Coordinate), Value>;
+
+/// A re-read of a Postgres model's inputs after its data moved
+/// ([`ImprovApp::follow_notifications`]).
+#[derive(Default)]
+struct Reread {
+    /// One is asked for.
+    wanted: bool,
+    /// When (egui time) the last one started.
+    last: f64,
+    /// The one running: its version, inputs and save token (`None`: the
+    /// read failed).
+    running: Option<mpsc::Receiver<Option<(i64, Inputs, improv_store::SaveToken)>>>,
+    /// Wakes the window when one lands.
+    wake: Option<Arc<dyn Fn() + Send + Sync>>,
+}
+
+/// Seconds between re-reads of a Postgres model's inputs: notifications
+/// in between are coalesced into the next.
+const REREAD_SECS: f64 = 1.0;
+
 fn put_input(
     model: &mut Model,
     measure: MeasureId,
@@ -5549,7 +5708,7 @@ impl ImprovApp {
         store.save_model(&self.model).map_err(save_error)?;
         self.db = path.to_owned();
         // Another store: listen to it (if it notifies) from the next frame.
-        (self.heard, self.listened) = (None, false);
+        (self.heard, self.listened, self.data_seen) = (None, false, None);
         self.save_token = store.take_save_token();
         self.unsaved = Default::default();
         // The new store has everything; what the old one refused is moot.
@@ -10411,6 +10570,8 @@ mod tests {
             outside: None,
             heard: None,
             listened: false,
+            data_seen: None,
+            reread: Reread::default(),
             queued_import: None,
             desk: egui::vec2(INITIAL_WINDOW[0], INITIAL_WINDOW[1]),
         }
@@ -18726,13 +18887,16 @@ mod tests {
     }
 
     /// A Postgres model whose database notifies (pg_improv 0.15's
-    /// `version_moved` trigger; stood in for here by an SQL trigger of the
-    /// same name, when the test database lacks pg_improv): the window
-    /// listens instead of probing, its own save's echo raises nothing, and
-    /// another writer's save offers Reload as the notification lands,
-    /// without waiting for the probe.
+    /// `version_moved` trigger, and its data notifications; stood in for
+    /// here by SQL, when the test database lacks pg_improv): the window
+    /// listens instead of probing. A data move with nothing unsaved brings
+    /// the other program's cells in, recomputed, without a panel; its own
+    /// save's echo changes nothing; with an edit unsaved, the cells wait
+    /// and nothing is overwritten; a version move offers Reload at once;
+    /// a killed listener falls back to the probe. Prints the re-read's
+    /// time on the sample model.
     #[test]
-    fn a_notifying_postgres_model_offers_reload_when_told() {
+    fn a_notifying_postgres_model_takes_others_cells_live() {
         let Ok(dsn) = std::env::var("IMPROV_TEST_PG") else {
             println!("skipped: IMPROV_TEST_PG not set");
             return;
@@ -18742,8 +18906,9 @@ mod tests {
             .filter_map(|p| p.split_once('='))
             .collect();
         let get = |k| kv.get(k).copied().unwrap_or_default();
+        let name = format!("guinotify_{}", std::process::id());
         let url = format!(
-            "postgres://{}:{}@{}:{}/{}?model=guinotify_{}",
+            "postgres://{}:{}@{}:{}/{}?model={name}",
             get("user"),
             get("password"),
             get("host"),
@@ -18752,7 +18917,6 @@ mod tests {
                 p => p,
             },
             get("dbname"),
-            std::process::id()
         );
         let mut store = improv_store::Store::open(&url).unwrap();
         store.save_model(&grid_2x2_model()).unwrap();
@@ -18764,11 +18928,14 @@ mod tests {
             )
             .unwrap()
             .get(0);
+        // The stand-in: the version trigger, and a data notification sent
+        // by hand after each outside write (as pg_improv's worker does).
         if !has {
             sql.batch_execute(
                 "CREATE OR REPLACE FUNCTION public.improv_test_version_moved() RETURNS trigger
                    LANGUAGE plpgsql AS $$ BEGIN
-                     PERFORM pg_notify('improv_' || NEW.model_id, NEW.tx::text); RETURN NULL;
+                     PERFORM pg_notify('improv_' || NEW.model_id, NEW.tx::text || '.0');
+                     RETURN NULL;
                    END $$;
                  CREATE TRIGGER version_moved AFTER INSERT OR UPDATE OF tx
                    ON improv.model_version FOR EACH ROW
@@ -18776,31 +18943,93 @@ mod tests {
             )
             .unwrap();
         }
+        let mid: i64 = sql
+            .query_one("SELECT id FROM improv.model WHERE name = $1", &[&name])
+            .unwrap()
+            .get(0);
+        let gen = std::cell::Cell::new(0);
+        // Another program writes a cell where no save of a GUI goes
+        // (improv.cell, as a bound table's row), then the data moves.
+        let outside = |sql: &mut postgres::Client, v: f64| {
+            gen.set(gen.get() + 1);
+            let tx: i64 = sql
+                .query_one(
+                    "SELECT tx FROM improv.model_version WHERE model_id = $1",
+                    &[&mid],
+                )
+                .unwrap()
+                .get(0);
+            sql.batch_execute(&format!(
+                "UPDATE improv.cell SET value = '{v}'::jsonb WHERE model_id = {mid} \
+                   AND measure_id = 101 AND coord = '{{\"1\": 10, \"2\": 20}}'::jsonb;
+                 SELECT pg_notify('improv_{mid}', '{tx}.{}')",
+                gen.get()
+            ))
+            .unwrap();
+        };
         let mut app = ImprovApp::load(&url).expect("load");
-        let (qkey, _) = q_and_rev_keys();
+        let (qkey, rkey) = q_and_rev_keys();
         let mut desk = Desk::new();
         desk.settle(&mut app);
         assert!(app.heard.is_some(), "it listens");
-        // Its own save: notified, recognized, nothing offered.
-        app.set_cell(MeasureId(101), qkey.clone(), Value::Number(5.0))
-            .expect("its own save");
-        std::thread::sleep(std::time::Duration::from_millis(300));
+        let wait_for = |app: &mut ImprovApp, desk: &mut Desk, f: &dyn Fn(&ImprovApp) -> bool| {
+            for _ in 0..150 {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                desk.time += 0.05;
+                desk.settle(app);
+                if f(app) {
+                    return true;
+                }
+            }
+            false
+        };
+        // A data move: the cell comes in, Revenue recomputes, no panel.
+        let t0 = std::time::Instant::now();
+        outside(&mut sql, 42.0);
+        let took = wait_for(&mut app, &mut desk, &|a| {
+            a.cell_text(MeasureId(101), &qkey).as_deref() == Some("42")
+        });
+        assert!(took, "another program's cell came in: {}", app.status);
+        println!(
+            "data move to the window, re-read included: {:?}",
+            t0.elapsed()
+        );
+        assert_eq!(app.outside, None);
+        assert_eq!(app.status, "1 cell changed by another program");
+        assert!(app.cell_text(MeasureId(102), &rkey).is_some());
+        // Its own save: the echo diffs to nothing, no panel; and the save
+        // after the take wrote only its own cell (no conflict).
+        let other_key: CoordKey = [(1, 11), (2, 21)].into_iter().collect();
+        app.set_cell(MeasureId(101), other_key.clone(), Value::Number(5.0))
+            .expect("its own save after taking theirs");
+        desk.time += 2.0;
         desk.settle(&mut app);
         assert_eq!(app.outside, None, "its own save's echo");
-        // Another writer: offered at once, no probe interval waited out.
+        // An unsaved edit: the outside cell waits, nothing is overwritten.
+        app.dirty = true;
+        outside(&mut sql, 43.0);
+        assert!(!wait_for(&mut app, &mut desk, &|a| {
+            a.cell_text(MeasureId(101), &qkey).as_deref() == Some("43")
+        }));
+        app.dirty = false;
+        assert!(
+            wait_for(&mut app, &mut desk, &|a| a
+                .cell_text(MeasureId(101), &qkey)
+                .as_deref()
+                == Some("43")),
+            "taken once nothing is unsaved"
+        );
+        // A version move (another program's structural save): Reload.
         let mut m = store.reload_model().unwrap();
-        m.set_input(MeasureId(101), decode(&qkey), Value::Number(9.0));
+        m.add_item(ItemId(12), CategoryId(1), "2027");
         store.save_model(&m).unwrap();
-        let mut offered = false;
-        for _ in 0..50 {
-            std::thread::sleep(std::time::Duration::from_millis(20));
-            desk.settle(&mut app);
-            if matches!(app.outside, Some((_, true))) {
-                offered = true;
-                break;
-            }
-        }
-        assert!(offered, "the notification offers Reload");
+        assert!(
+            wait_for(&mut app, &mut desk, &|a| matches!(
+                a.outside,
+                Some((_, true))
+            )),
+            "a version move offers Reload"
+        );
         // A killed listener falls back to polling.
         sql.execute(
             "SELECT pg_terminate_backend(pid) FROM pg_stat_activity \
@@ -18808,14 +19037,10 @@ mod tests {
             &[],
         )
         .unwrap();
-        for _ in 0..100 {
-            std::thread::sleep(std::time::Duration::from_millis(50));
-            desk.settle(&mut app);
-            if app.heard.is_none() {
-                break;
-            }
-        }
-        assert!(app.heard.is_none(), "back to the probe");
+        assert!(
+            wait_for(&mut app, &mut desk, &|a| a.heard.is_none()),
+            "back to the probe"
+        );
         if !has {
             sql.batch_execute(
                 "DROP TRIGGER version_moved ON improv.model_version;

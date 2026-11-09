@@ -16,9 +16,9 @@ pub use improv_storage_mentat::StoredPolicies;
 /// past it a Mentat save reads every cell of the model, so a caller that
 /// saves a model holding only the changed cells stays at or under it.
 pub use improv_storage_mentat::SEEK_SAVE_LIMIT;
-/// A Postgres model's change notifications ([`Store::listen`]).
-pub use improv_storage_pg::Listener;
 use improv_storage_pg::PgModelStore;
+/// A Postgres model's change notifications ([`Store::listen`]).
+pub use improv_storage_pg::{Heard, Listener};
 
 /// Either backend's error. Callers match [`StoreError::Conflict`] for the
 /// "reload and retry" path; everything else is reported as text.

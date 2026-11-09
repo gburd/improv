@@ -694,6 +694,8 @@ fn recompute(name: &str, measures: &[i64], captured: Option<Vec<CapturedRel>>) -
         );
         return Ok(());
     }
+    // This transaction changed the model's inputs.
+    super::data_moved(mid)?;
     let changed = measures
         .iter()
         .map(|&i| id32(i).map(MeasureId))

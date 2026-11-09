@@ -659,7 +659,7 @@ pub struct App {
     /// A Postgres model's change notifications (pg_improv 0.15+), from a
     /// listening thread: each moved version. With it, H9 needs no store
     /// probe on every key; `None` for a file (or once it stopped).
-    pub heard: Option<std::sync::mpsc::Receiver<i64>>,
+    pub heard: Option<std::sync::mpsc::Receiver<Heard>>,
     /// `q` was pressed and its save failed: the next `q` quits anyway.
     pub quit_armed: bool,
     /// `R` was pressed with something to lose (H1-20): the next `R`
@@ -674,6 +674,23 @@ pub struct App {
     /// A change since the last autosave attempt ([`App::autosave`]).
     pub autosave_due: bool,
 }
+
+/// A model's input cells.
+pub type Inputs = std::collections::HashMap<(MeasureId, improv_core_model::Coordinate), Value>;
+
+/// What a Postgres model's listening thread tells the session.
+pub enum Heard {
+    /// The model's version moved to this.
+    Version(i64),
+    /// Its data moved: its input cells as re-read at this version, with
+    /// that read's save token.
+    Inputs(i64, Box<(Inputs, improv_store::SaveToken)>),
+    /// Nothing: the thread is alive.
+    Alive,
+}
+
+/// The fewest seconds between re-reads of a Postgres model's inputs.
+pub const REREAD: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// What a failed save says (H6). The edits stay in the session either way.
 pub fn save_error(e: improv_store::StoreError) -> String {
@@ -2026,6 +2043,66 @@ impl App {
         self.status = Some(self.adopt_views(model, format!("saved view '{name}'")));
         self.applied_view = Some(id);
         id
+    }
+
+    /// Another program changed this model's input cells: `cells` as
+    /// re-read at version `tx`, with that read's save `token`. When the
+    /// structure is this session's (`tx` its save token's) and nothing is
+    /// unsaved, the cells that differ come in (no undo step, no save), the
+    /// read's token is taken, and the status says how many; this
+    /// session's own save diffs to nothing. Else nothing changes (`false`):
+    /// an unsaved edit is never overwritten.
+    pub fn take_inputs(&mut self, tx: i64, cells: Inputs, token: improv_store::SaveToken) -> bool {
+        if self.unsaved || self.autosave_due || Some(tx) != self.save_token.tx() {
+            return false;
+        }
+        let mut n = 0;
+        let mut model = self.model.clone();
+        for (k, v) in &cells {
+            if model.inputs.get(k) != Some(v) {
+                model.inputs.insert(k.clone(), v.clone());
+                n += 1;
+            }
+        }
+        let gone: Vec<_> = (model.inputs.keys())
+            .filter(|k| !cells.contains_key(*k))
+            .cloned()
+            .collect();
+        n += gone.len();
+        for k in gone {
+            model.inputs.remove(&k);
+        }
+        self.save_token = token;
+        if n == 0 {
+            return true;
+        }
+        let edits: Vec<improv_engine::session::Edit> = (model.inputs.iter())
+            .filter(|(k, v)| self.model.inputs.get(*k) != Some(*v))
+            .map(|((m, at), v)| (*m, at, Some(v)))
+            .chain(
+                (self.model.inputs.keys())
+                    .filter(|k| !model.inputs.contains_key(*k))
+                    .map(|(m, at)| (*m, at, None)),
+            )
+            .map(|(m, at, v)| improv_engine::session::Edit {
+                measure: m,
+                coord: improv_engine::encode_coord(at),
+                value: (model.measures.get(&m).zip(v))
+                    .and_then(|(x, v)| improv_engine::session::input_cell(x.value_type, v)),
+            })
+            .collect();
+        self.model = model;
+        self.saved = Some(self.model.clone());
+        let applied = match &mut self.engine {
+            Some(e) => e.apply(edits).map(|s| self.snapshot = s).is_ok(),
+            None => true,
+        };
+        if !applied {
+            let _ = self.rebuild_keeping_layout();
+        }
+        self.reselect();
+        self.status = Some(format!("{} changed by another program", plural(n, "cell")));
+        true
     }
 
     /// Save the model to the store at `path`, refusing to overwrite another

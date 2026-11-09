@@ -313,26 +313,66 @@ fn bump_version(model_id: i64) -> Res<()> {
     Ok(())
 }
 
+/// A queued notification: the model, its `(model_version.tx,
+/// stale.data_gen)` as seen, and the subtransaction that saw them.
+type Queued = (i64, (i64, i64), pg_sys::SubTransactionId);
+
 thread_local! {
-    /// What this transaction notifies at commit ([`notify`]): per model,
-    /// its `model_version.tx` as seen, and the subtransaction that saw it.
-    static NOTIFY: std::cell::RefCell<Vec<(i64, i64, pg_sys::SubTransactionId)>> =
-        const { std::cell::RefCell::new(Vec::new()) };
+    /// What this transaction notifies at commit ([`notify`]).
+    static NOTIFY: std::cell::RefCell<Vec<Queued>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
-/// `NOTIFY improv_<model id>, '<tx>'` when this transaction commits: `tx`
-/// is the model's `improv.model_version.tx`, and the payload is the number
-/// and nothing else (any role may `LISTEN` on any channel). A client
-/// listens and re-reads through its normal path, which applies the model's
-/// policies. Queued here and sent by [`send_notifications`] at
-/// `PRE_COMMIT`, once per model with its last `tx`: Postgres refuses to
+/// `NOTIFY improv_<model id>, '<tx>.<data_gen>'` when this transaction
+/// commits: `tx` is the model's `improv.model_version.tx` (its structure's
+/// version, which a store's save moves too) and `data_gen` its
+/// `improv.stale.data_gen` (moved by every transaction that applied its
+/// inputs or wrote its results, [`data_moved`]). The payload is the two
+/// numbers and nothing else (any role may `LISTEN` on any channel). A
+/// client listens and re-reads through its normal path, which applies the
+/// model's policies. Queued here and sent by [`send_notifications`] at
+/// `PRE_COMMIT`, once per model with its last pair: Postgres refuses to
 /// `PREPARE` a transaction that has called `NOTIFY`, so a prepared one
 /// sends none, and a rolled-back savepoint takes its own back
 /// ([`notify_subxact`]).
-pub(crate) fn notify(model_id: i64, tx: i64) {
+pub(crate) fn notify(model_id: i64) -> Res<()> {
+    let pair = owner::as_catalog(|| {
+        Spi::connect(|c| {
+            let r = c.select(
+                "SELECT (SELECT tx FROM improv.model_version WHERE model_id = $1), \
+                        (SELECT data_gen FROM improv.stale WHERE model_id = $1)",
+                None,
+                &[model_id.into()],
+            )?;
+            let row = r.first();
+            Ok((
+                row.get::<i64>(1)?.unwrap_or(0),
+                row.get::<i64>(2)?.unwrap_or(0),
+            ))
+        })
+    })?;
     // SAFETY: a read of the backend's transaction state, in a transaction.
     let sub = unsafe { pg_sys::GetCurrentSubTransactionId() };
-    NOTIFY.with(|n| n.borrow_mut().push((model_id, tx, sub)));
+    NOTIFY.with(|n| n.borrow_mut().push((model_id, pair, sub)));
+    Ok(())
+}
+
+/// Model `mid`'s inputs were applied or its results written in this
+/// transaction: move its `data_gen` on, and notify at commit. As the
+/// extension (`improv.stale` is its own); the row is the last lock any
+/// writer takes, after the model's and its version's.
+pub(crate) fn data_moved(mid: i64) -> Res<()> {
+    owner::as_catalog(|| {
+        Spi::connect_mut(|c| {
+            c.update(
+                "INSERT INTO improv.stale AS s (model_id) VALUES ($1) \
+                 ON CONFLICT (model_id) DO UPDATE SET data_gen = s.data_gen + 1",
+                None,
+                &[mid.into()],
+            )?;
+            Ok(())
+        })
+    })?;
+    notify(mid)
 }
 
 /// A subtransaction ended: an aborted one's notifications go, a committed
@@ -361,11 +401,11 @@ pub(crate) fn send_notifications(send: bool) {
     if !send {
         return;
     }
-    let last: std::collections::BTreeMap<i64, i64> =
-        queued.into_iter().map(|(m, tx, _)| (m, tx)).collect();
-    for (mid, tx) in last {
+    let last: std::collections::BTreeMap<i64, (i64, i64)> =
+        queued.into_iter().map(|(m, v, _)| (m, v)).collect();
+    for (mid, (tx, data)) in last {
         let channel = std::ffi::CString::new(format!("improv_{mid}")).expect("no NUL");
-        let payload = std::ffi::CString::new(tx.to_string()).expect("no NUL");
+        let payload = std::ffi::CString::new(format!("{tx}.{data}")).expect("no NUL");
         // SAFETY: in the committing transaction, before PreCommit_Notify
         // reads the list this appends to; it copies both strings.
         unsafe { pg_sys::Async_Notify(channel.as_ptr(), payload.as_ptr()) };
@@ -381,13 +421,13 @@ fn version_moved<'a>(
     let r = (|| -> Res<()> {
         let new = t.new().ok_or("no new row")?;
         let mid: i64 = new.get_by_name("model_id")?.ok_or("no model_id")?;
-        let tx: i64 = new.get_by_name("tx")?.ok_or("no tx")?;
+        let tx: Option<i64> = new.get_by_name("tx")?;
         let moved = match t.old() {
-            Some(old) => old.get_by_name::<i64>("tx")? != Some(tx),
+            Some(old) => old.get_by_name::<i64>("tx")? != tx,
             None => true,
         };
         if moved {
-            notify(mid, tx);
+            notify(mid)?;
         }
         Ok(())
     })();

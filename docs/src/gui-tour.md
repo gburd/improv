@@ -196,8 +196,12 @@ Every two seconds the GUI checks whether another program saved the
 model; on a Postgres model under pg_improv 0.15 or later it listens
 instead (a second connection that `LISTEN`s for the model's
 notifications; see [Live updates](./postgres.md#live-updates)), so it
-knows at once and reads nothing in between. When one has, a **Changed**
-panel offers **Reload** (File ▸ Revert
+knows at once and reads nothing in between. There, another program's
+change to the cells (an `UPDATE` of a bound table) comes in by itself
+when nothing in the window is unsaved: the status line says how many
+cells changed, and the derived ones recompute. When another program
+changed the structure or saved, or you have an unsaved edit, a
+**Changed** panel offers **Reload** (File ▸ Revert
 to Saved: their changes come in and the undo history is dropped) or
 **Not Now**, which hides it until they save again. Until you reload, a
 save from this window is refused as above, so nothing is overwritten.

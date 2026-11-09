@@ -819,11 +819,34 @@ pub struct PgModelStore {
 
 /// A connection that `LISTEN`s on one model's channel (`improv_<id>`).
 /// pg_improv 0.15+ notifies it at the commit of every transaction that
-/// moved the model's version or wrote its results, with the version as
-/// the payload; without pg_improv (or an older one) nothing arrives, and a
-/// client keeps polling [`PgModelStore::tx_high_water`].
+/// moved the model's version or applied its inputs or wrote its results,
+/// with `<tx>.<data_gen>` as the payload; without pg_improv (or an older
+/// one) nothing arrives, and a client keeps polling
+/// [`PgModelStore::tx_high_water`].
 pub struct Listener {
     client: Client,
+}
+
+/// One notification: the model's version (`improv.model_version.tx`)
+/// and its data generation (`improv.stale.data_gen`), as of the commit
+/// that sent it. A version move is a structural change or a store's save;
+/// a data move is inputs applied or results written. Opaque otherwise:
+/// compare for equality.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Heard {
+    pub tx: i64,
+    pub data: i64,
+}
+
+impl Heard {
+    /// A payload `<tx>.<data_gen>` (or a bare `<tx>`, data 0).
+    fn parse(p: &str) -> Option<Heard> {
+        let (tx, data) = p.split_once('.').unwrap_or((p, "0"));
+        Some(Heard {
+            tx: tx.parse().ok()?,
+            data: data.parse().ok()?,
+        })
+    }
 }
 
 impl Listener {
@@ -841,20 +864,20 @@ impl Listener {
         Ok(Listener { client })
     }
 
-    /// Wait up to `timeout` for notifications; the versions they carry, in
-    /// order (empty when none came). `Err` when the connection is gone:
-    /// open another to keep listening.
-    pub fn wait(&mut self, timeout: std::time::Duration) -> Result<Vec<i64>> {
+    /// Wait up to `timeout` for notifications; what they carry, in order
+    /// (empty when none came; a payload that is not one is skipped). `Err`
+    /// when the connection is gone: open another to keep listening.
+    pub fn wait(&mut self, timeout: std::time::Duration) -> Result<Vec<Heard>> {
         use postgres::fallible_iterator::FallibleIterator;
         let mut out = Vec::new();
         let first = self.client.notifications().timeout_iter(timeout).next()?;
         if let Some(m) = first {
-            out.extend(m.payload().parse::<i64>().ok());
+            out.extend(Heard::parse(m.payload()));
             // Then what is queued already, without waiting again.
             let mut n = self.client.notifications();
             let mut queued = n.iter();
             while let Some(m) = queued.next()? {
-                out.extend(m.payload().parse::<i64>().ok());
+                out.extend(Heard::parse(m.payload()));
             }
         }
         if out.is_empty() && self.client.is_closed() {

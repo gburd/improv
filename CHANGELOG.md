@@ -108,21 +108,26 @@ this project follows [Semantic Versioning](https://semver.org/).
 ### Changed
 
 - **pg_improv 0.15.0: live updates.** A transaction that moves a model's
-  version or writes its results (the sync worker, trigger and commit
-  modes, `improv.recalc`) sends `NOTIFY improv_<model id>,
-  '<model_version.tx>'` at its commit, the payload the number only. A
-  rolled-back transaction or savepoint and a prepared one send nothing.
-  `ALTER EXTENSION pg_improv UPDATE` adds the trigger
-  (`pg_improv--0.14.0--0.15.0.sql`); no existing row changes.
+  version or applies its inputs or writes its results (the sync worker,
+  trigger and commit modes, `improv.recalc`) sends `NOTIFY improv_<model
+  id>, '<tx>.<data_gen>'` at its commit: two numbers and nothing else,
+  since any role may `LISTEN`. A rolled-back transaction or savepoint
+  and a prepared one send nothing. `ALTER EXTENSION pg_improv UPDATE`
+  (`pg_improv--0.14.0--0.15.0.sql`) adds the version trigger and
+  `improv.stale.data_gen`; no existing value changes.
 
-- **The GUI and the TUI hear a Postgres model's changes.** On a
+- **The GUI and the TUI follow a Postgres model live.** On a
   `postgres://` model under pg_improv 0.15 the desktop GUI and the TUI
   `LISTEN` for its notifications on a second connection, in place of the
-  GUI's two-second probe and the TUI's check on every key: the
-  **Changed** panel (GUI) and "another program saved this model" (TUI,
-  now without a key) show as the other program commits. A database
-  without the notifications (no pg_improv, an older one) is polled as
-  before. `improv_store::Store::listen` and `improv_storage_pg::Listener`
+  GUI's two-second probe and the TUI's check on every key. Another
+  program's `UPDATE` of a bound table shows by itself: the window
+  re-reads the input cells (at most once a second; about 220 ms at
+  100,000 cells, off the UI thread) and takes in those that differ,
+  recomputed, when nothing in it is unsaved, and never overwrites an
+  unsaved edit. A structural change or another program's save still
+  offers Reload (GUI) or says so (TUI, now without a key). A database
+  without the notifications is polled as before.
+  `improv_store::Store::listen` and `improv_storage_pg::{Listener, Heard}`
   are the API.
 
 ## [0.14.0] - 2026-11-08

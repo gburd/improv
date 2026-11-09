@@ -2079,12 +2079,12 @@ enum Applied {
     Rebuild,
 }
 
-/// Record a poll's progress in the model's worker transaction; result
-/// rows written (`changed > 0`) notify the model's listeners when it
-/// commits ([`super::notify`]).
+/// Record a poll's progress in the model's worker transaction; a batch
+/// applied (or a rebuild) moves the model's `data_gen` and notifies its
+/// listeners when it commits ([`super::data_moved`]).
 fn record(mid: i64, changed: i64, lsn: Option<u64>, how: Applied) -> Res<()> {
-    if changed > 0 {
-        super::notify(mid, model_version(mid)?);
+    if changed > 0 || how != Applied::Nothing {
+        super::data_moved(mid)?;
     }
     Spi::run_with_args(
         "UPDATE improv.sync_state SET last_applied_at = now(), last_error = NULL, \

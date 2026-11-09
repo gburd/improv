@@ -878,11 +878,11 @@ q "ALTER SYSTEM RESET autovacuum"
 q "SELECT pg_reload_conf()" >/dev/null
 echo "ok: idle, the worker listed its models $idle22 and $idle22b times in 5 s (about 100 polls); define, a new model, manual and back, a partition attached and a drop were each applied at once"
 
-# 23. live updates: NOTIFY improv_<model id>, '<model_version.tx>' at the
-#     commit of each transaction that moved the version or wrote results
-#     (the worker's apply, trigger and commit modes, recalc); the payload is
-#     the number only; nothing from a rollback, a rolled-back savepoint, a
-#     transaction that wrote no result, or a prepared transaction.
+# 23. live updates: NOTIFY improv_<model id>, '<tx>.<data_gen>' at the
+#     commit of each transaction that moved the version (tx) or applied
+#     inputs or wrote results (data_gen: the worker's apply, trigger and
+#     commit modes, recalc); the payload is the two numbers only; nothing
+#     from a rollback or a rolled-back savepoint.
 q "CREATE TABLE t23 (k text PRIMARY KEY, v float8)"
 q "INSERT INTO t23 VALUES ('a', 1)"
 q "SELECT improv.create_model('m23')" >/dev/null
@@ -892,7 +892,9 @@ q "SELECT improv.define('m23', 'W = V * 2')" >/dev/null
 W23="SELECT string_agg(k || '=' || value, ',' ORDER BY k) FROM improv_m23.w"
 wait_for "$W23" "a=2" "m23 caught up" >/dev/null
 mid23=$(q "SELECT id FROM improv.model WHERE name = 'm23'")
-ver23() { q "SELECT tx FROM improv.model_version WHERE model_id = $mid23"; }
+ver23() { q "SELECT v.tx || '.' || s.data_gen FROM improv.model_version v JOIN improv.stale s USING (model_id) WHERE model_id = $mid23"; }
+tx23() { ver23 | cut -d. -f1; }
+gen23() { ver23 | cut -d. -f2; }
 # A listener: psql prints each notification after a command, so it runs one
 # every 50 ms (on a FIFO, so the session is one connection all along).
 N23=$D/notify23.log; F23=$D/notify23.fifo
@@ -909,45 +911,46 @@ wait_heard() { # payload label
 	echo "FAIL: no NOTIFY improv_$mid23 '$1' for $2"; cat "$N23"; exit 1
 }
 sleep 0.5
-# The worker's apply: the version, unchanged, as the payload.
-v=$(ver23)
+# The worker's apply: the version unchanged, data_gen moved on.
+t=$(tx23) g=$(gen23)
 q "UPDATE t23 SET v = 5 WHERE k = 'a'"
 wait_for "$W23" "a=10" "m23 applied" >/dev/null
+v=$(ver23)
+[ "${v%%.*}" = "$t" ] && [ "${v#*.}" -gt "$g" ] || { echo "FAIL: the apply moved $t.$g to $v"; exit 1; }
 wait_heard "$v" "the worker's apply"
 # A structural change: the new version.
 q "SELECT improv.define('m23', 'W = V * 3', replace => true)" >/dev/null
 v=$(ver23)
 wait_heard "$v" "define"
 wait_for "$W23" "a=15" "m23 redefined" >/dev/null
-# Trigger mode: entering it (the version) and a write (results, same version).
+# Trigger mode: entering it (the version) and a write (data_gen).
 q "SELECT improv.set_sync_mode('m23', 'trigger')" >/dev/null
-vt=$(ver23)
-wait_heard "$vt" "set_sync_mode"
-before=$(wc -l <"$N23")
+wait_heard "$(ver23)" "set_sync_mode"
+t=$(tx23)
 q "UPDATE t23 SET v = 6 WHERE k = 'a'"
-for _ in $(seq 1 100); do [ "$(wc -l <"$N23")" -gt "$before" ] && break; sleep 0.05; done
-[ "$(wc -l <"$N23")" -gt "$before" ] || { echo "FAIL: a trigger-mode write sent nothing"; exit 1; }
-# Nothing from a rollback, a rolled-back savepoint, or a write that leaves
-# every result as it was.
+v=$(ver23)
+[ "${v%%.*}" = "$t" ] || { echo "FAIL: a trigger-mode write moved the version"; exit 1; }
+wait_heard "$v" "a trigger-mode write"
+# Nothing from a rollback or a rolled-back savepoint.
 sleep 0.3; before=$(wc -l <"$N23")
 q "BEGIN; UPDATE t23 SET v = 7 WHERE k = 'a'; ROLLBACK;"
 q "BEGIN; SAVEPOINT s; UPDATE t23 SET v = 8 WHERE k = 'a'; ROLLBACK TO s; COMMIT;"
-q "UPDATE t23 SET v = 6 WHERE k = 'a'"
 sleep 0.5
-eq14 "$(wc -l <"$N23")" "$before" "a rollback, a rolled-back savepoint and a no-op write notify nothing"
-# A recalc that changes nothing sends nothing; one that does, notifies.
+eq14 "$(wc -l <"$N23")" "$before" "a rollback and a rolled-back savepoint notify nothing"
+# Manual mode: a write notifies nothing; a recalc that writes results does.
 q "SELECT improv.set_sync_mode('m23', 'manual')" >/dev/null
-q "UPDATE t23 SET v = 9 WHERE k = 'a'"
 sleep 0.3; before=$(wc -l <"$N23")
+q "UPDATE t23 SET v = 9 WHERE k = 'a'"
+sleep 0.5
+eq14 "$(wc -l <"$N23")" "$before" "a manual-mode write notifies nothing"
 q "SELECT improv.recalc('m23')" >/dev/null
-for _ in $(seq 1 100); do [ "$(wc -l <"$N23")" -gt "$before" ] && break; sleep 0.05; done
-[ "$(wc -l <"$N23")" -gt "$before" ] || { echo "FAIL: a recalc that wrote results sent nothing"; exit 1; }
-# Every payload is a number, and only this model's channel is heard.
-bad=$(grep "notification" "$N23" | grep -vc "notification \"improv_$mid23\" with payload \"[0-9]*\" received" || true)
-eq14 "$bad" 0 "every notification is improv_<id> with a bare number"
+wait_heard "$(ver23)" "a recalc that wrote results"
+# Every payload is two numbers, and only this model's channel is heard.
+bad=$(grep "notification" "$N23" | grep -vc "notification \"improv_$mid23\" with payload \"[0-9]*\.[0-9]*\" received" || true)
+eq14 "$bad" 0 "every notification is improv_<id> with <tx>.<data_gen>"
 q "SELECT improv.set_sync_mode('m23', 'logical')" >/dev/null
 kill $tick23 $lpid23 2>/dev/null || true
 exec 7>&-
 wait $lpid23 2>/dev/null || true
-echo "ok: NOTIFY improv_<id>, '<version>' from the worker's apply, define, set_sync_mode, a trigger-mode write and a recalc; none from a rollback, a savepoint undone or a no-op write"
+echo "ok: NOTIFY improv_<id>, '<tx>.<data_gen>' from the worker's apply, define, set_sync_mode, a trigger-mode write and a recalc; none from a rollback, a savepoint undone or a manual-mode write"
 echo "PASS"
