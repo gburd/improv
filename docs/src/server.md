@@ -402,7 +402,13 @@ system's CAs. The certificate is always verified, and its name checked.
 network in cleartext; there is no option to allow it. It follows no
 redirect (the token stays with the host it was given for), refuses a
 URL with a user name or password, and an `http://` URL does not go
-through `*_PROXY`.
+through `*_PROXY` (only `https://` off this machine does, minus
+`NO_PROXY`). An error it reports never carries the token, even when a
+server or proxy echoes the request. `improv-gui https://…` and
+`improv-tui https://…` are built on it. They are a reduced view in 0.15:
+the GUI has the web GUI's commands (no graphs, printing, Inspector or
+CSV wizard; the window says `server view`), the TUI one measure's grid
+with edits, pages, pivoting and undo.
 
 **Access.** Every GUI route asks the model's access policies, for each
 measure, item and cell it touches, within what the token's scope allows

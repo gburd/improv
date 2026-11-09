@@ -289,9 +289,15 @@ loops.
 
 ## Live updates
 
-**Postgres.** pg_improv sends `NOTIFY improv_<model>, '<version>'` when
-`improv.model_version` moves and when the sync worker commits result
-changes. The payload is a number and nothing else: any role may `LISTEN`
+**Postgres.** pg_improv sends `NOTIFY improv_<model id>, '<version>'`
+when `improv.model_version` moves and when the sync worker commits result
+changes. The channel is the model's numeric id (`improv.model.id`), not
+its name: a model name is any text, and a channel is an identifier
+(unquoted, folded to lower case, at most 63 bytes), so names would need
+quoting rules every client gets right, could collide after folding, and
+would be cut at 63 bytes. A client looks the id up once
+(`SELECT id FROM improv.model WHERE name = …`, which every reader may
+read). The payload is a number and nothing else: any role may `LISTEN`
 on any channel. A client keeps one extra connection that listens, and on
 a notification re-reads what it shows through the filtered read path. The
 re-read applies the policy, so each client sees only what it may.

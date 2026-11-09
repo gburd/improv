@@ -103,7 +103,8 @@ fn served_main(url: &str) -> eframe::Result<()> {
             std::process::exit(1);
         }
     };
-    let title = format!("Improv - {}", target.base());
+    // Says it is the server's view (fewer commands than a local model).
+    let title = format!("Improv - {} (server view)", target.base());
     let token = std::env::var("IMPROV_API_TOKEN").ok();
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()

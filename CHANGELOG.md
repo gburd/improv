@@ -74,7 +74,10 @@ this project follows [Semantic Versioning](https://semver.org/).
   cells are the server's, and changes made elsewhere show as they
   happen. Both GUIs now grey out what the user may not do, from the
   server's capabilities (menus, the Model Browser's buttons, formula
-  lines, cells), and show every refusal on the status line.
+  lines, cells), and show every refusal on the status line. A server
+  model is a reduced view for now: the web GUI's commands, without the
+  desktop's graphs, printing, Inspector, Format panel or CSV wizard; the
+  title bar says `(server view)`, and those commands are greyed.
 - **The TUI opens server models.** `improv-tui https://host` shows one
   measure's grid over the server's `/v1` API, as the token's user, with
   pages, pivoting, cell edits and undo on the server; a cell the user may

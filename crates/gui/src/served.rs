@@ -36,6 +36,11 @@ impl<S: ModelService> eframe::App for Served<S> {
     }
 }
 
+/// What a command the server view lacks says (they are greyed in the
+/// menu; a key equivalent lands here).
+const NOT_HERE: &str = "not in the server view yet: graphs, printing, the Inspector \
+                        and the CSV wizard work on a local model (see the guide)";
+
 /// The guide's page for this app.
 const GUIDE: &str = "https://gburd.github.io/improv/web-gui.html";
 /// Room the main menu takes at the workspace's left.
@@ -443,6 +448,12 @@ impl<S: ModelService> WebApp<S> {
             .frame(egui::Frame::NONE.fill(LIGHT_GRAY).inner_margin(4.0))
             .show(root, |ui| {
                 ui.horizontal(|ui| {
+                    // On the desktop: the server's view of the model, with
+                    // fewer commands than a local file's (the title says
+                    // so too). The browser has nothing else.
+                    if cfg!(not(target_arch = "wasm32")) {
+                        ui.label(egui::RichText::new("Server view:").color(DARK_GRAY));
+                    }
                     // A screen reader hears it change (a polite live region).
                     let r = ui.label(&self.status);
                     ui.ctx().accesskit_node_builder(r.id, |n| {
@@ -678,7 +689,8 @@ impl<S: ModelService> WebApp<S> {
             Command::UserGuide => ctx.open_url(egui::OpenUrl::new_tab(GUIDE)),
             Command::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
             Command::Hide => ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true)),
-            _ => self.status = "not on a server model yet".into(),
+            // Greyed in the menu; a key equivalent says why.
+            _ => self.status = NOT_HERE.into(),
         }
     }
 
@@ -1792,6 +1804,13 @@ mod tests {
         let (ctx, mut app, path) = open("ann");
         settle(&ctx, &mut app);
         assert_eq!(app.title, "improv-web: ready");
+        // The status bar says it is the server's view.
+        let out = ctx.test_ui(egui::RawInput::default(), |ui| app.frame(ui));
+        let said = out.shapes.iter().any(|c| match &c.shape {
+            egui::epaint::Shape::Text(t) => t.galley.text() == "Server view:",
+            _ => false,
+        });
+        assert!(said, "the server view is labeled");
         // Price is absent everywhere; WidgetB has no row or column.
         let names: Vec<&str> = app
             .structure
@@ -1880,7 +1899,7 @@ mod tests {
         app.run(&ctx, Command::AddMatrix);
         assert_eq!(app.wins.len(), 4);
         app.run(&ctx, Command::Print);
-        assert_eq!(app.status, "not on a server model yet");
+        assert_eq!(app.status, NOT_HERE);
         // Quit closes the window (a viewport command, not a request).
         let out = ctx.test_ui(egui::RawInput::default(), |ui| {
             app.run(ui.ctx(), Command::Quit);

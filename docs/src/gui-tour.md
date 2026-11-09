@@ -634,9 +634,18 @@ The token comes from `IMPROV_API_TOKEN`, or the window asks for it; it is
 held in memory, never written down. `https://` is always verified, against
 the operating system's CAs, or with `?sslrootcert=FILE` only that CA.
 `http://` is refused for any host but this one, so a token never crosses a
-network in cleartext. The desktop-only parts (graphs, printing, the
-Inspector, the CSV wizard) are not there yet on a server model: see the
-web GUI's [What it does not do yet](./web-gui.md#what-it-does-not-do-yet).
+network in cleartext; a proxy (`HTTPS_PROXY`, `ALL_PROXY`, minus
+`NO_PROXY`) is used only for `https://` off this machine.
+
+**A server model is a reduced view (0.15).** The title bar says
+`(server view)` and the status bar `Server view:`. It has the web GUI's
+commands, not the whole desktop app's: no graphs, printing, Inspector,
+Format panel, CSV wizard, context help, function help, scenarios, item
+filters, range selection or Copy and Paste
+(see the web GUI's [What it does not do yet](./web-gui.md#what-it-does-not-do-yet)).
+Those commands are greyed in the menu, and a key equivalent for one says
+on the status line that it is not in the server view yet. The full
+desktop app over a server is on the plan (road-to-1.0 I4).
 
 ## Platforms
 

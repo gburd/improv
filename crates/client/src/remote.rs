@@ -12,7 +12,9 @@
 //! crosses a network; anywhere else it is refused, so a bearer token never
 //! travels in cleartext. Redirects are not followed (the token stays with
 //! the host it was given for), a URL with a user name or password is
-//! refused, and an `http://` URL ignores the `*_PROXY` variables.
+//! refused, and only `https://` off this machine goes through the
+//! environment's proxy (`HTTPS_PROXY`, `ALL_PROXY`; `NO_PROXY` honored).
+//! No error message carries the token.
 //!
 //! **The token** is a bearer token held in memory ([`ModelService::authenticate`]);
 //! never in a URL, a file or the error text. A server without tokens takes
@@ -150,9 +152,14 @@ impl Target {
             .max_redirects(0)
             .user_agent(concat!("improv/", env!("CARGO_PKG_VERSION")))
             .timeout_connect(Some(CONNECT_TIMEOUT));
-        // A proxy from the environment would see an http:// request, token
-        // and all; over https:// it sees only a tunnel.
-        let b = if self.tls { b } else { b.proxy(None) };
+        // The environment's proxy (`HTTPS_PROXY`, `ALL_PROXY`, minus
+        // `NO_PROXY`, which ureq reads) for https:// off this machine only:
+        // it sees a tunnel there, but an http:// request token and all, and
+        // a loopback server is never behind one.
+        let b = match self.tls && !is_loopback(&self.host) {
+            true => b,
+            false => b.proxy(None),
+        };
         // The stream waits for events as long as the server stays up; a
         // read that hears nothing, not even its keep-alive, gives up.
         let b = match stream {
@@ -242,12 +249,30 @@ struct Shared {
 
 impl Shared {
     fn push(&self, ev: Event) {
+        let ev = self.scrub(ev);
         let _ = self
             .out
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .send(ev);
         (self.wake)();
+    }
+
+    /// `ev` with the token taken out of any error text in it: a server
+    /// that echoes the request (a proxy's error page) must not show it.
+    fn scrub(&self, ev: Event) -> Event {
+        let Some(t) = self.token().filter(|t| t.len() >= 4) else {
+            return ev;
+        };
+        let clean = |s: String| s.replace(&t, "[token]");
+        match ev {
+            Event::Reply(n, Err(mut f)) => {
+                f.error = clean(f.error);
+                Event::Reply(n, Err(f))
+            }
+            Event::LoggedOut(e) => Event::LoggedOut(clean(e)),
+            ev => ev,
+        }
     }
 
     fn token(&self) -> Option<String> {
@@ -853,6 +878,47 @@ mod tests {
         assert!(
             matches!(&evs[0], Event::Reply(x, Err(f)) if *x == t && f.error.contains("stopped"))
         );
+    }
+
+    /// The token is in no error a front end shows: an unreachable server,
+    /// a refusal that echoes the request, a 401, the stream's 401.
+    #[test]
+    fn errors_never_carry_the_token() {
+        const SECRET: &str = "s3cret-token-xyzzy";
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let down = format!("http://{}", l.local_addr().unwrap());
+        drop(l);
+        let mut r = Remote::new(Target::parse(&down).unwrap(), || {}).unwrap();
+        r.authenticate(SECRET.into());
+        r.send(Request::Structure);
+        let echo = format!("Bearer {SECRET}");
+        let (url, _) = fake(vec![
+            http("500 Internal Server Error", &echo),
+            http("401 Unauthorized", ""),
+            http("401 Unauthorized", ""),
+        ]);
+        let mut up = Remote::new(Target::parse(&url).unwrap(), || {}).unwrap();
+        *up.shared.token.lock().unwrap() = Some(SECRET.into());
+        up.send(Request::Structure);
+        up.send(Request::Structure);
+        let mut evs = wait(&mut r, 2);
+        evs.extend(wait(&mut up, 2));
+        assert!(evs.len() >= 3, "{evs:?}");
+        for e in &evs {
+            let text = format!("{e:?}");
+            assert!(!text.contains(SECRET), "{text}");
+        }
+        assert!(
+            evs.iter()
+                .any(|e| format!("{e:?}").contains("Bearer [token]")),
+            "the echo is shown, scrubbed: {evs:?}"
+        );
+        // TLS errors: described from rustls, never the request.
+        let t = Target::parse("https://h").unwrap();
+        let e = ureq::Error::Rustls(rustls::Error::InvalidCertificate(
+            rustls::CertificateError::UnknownIssuer,
+        ));
+        assert!(!unreachable(&t, &e).contains(SECRET));
     }
 
     #[test]

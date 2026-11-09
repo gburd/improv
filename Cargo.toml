@@ -113,7 +113,8 @@ tokio-rustls = { version = "0.26", default-features = false, features = ["ring",
 # Throwaway CAs and certificates for the TLS tests (dev-dependency only).
 rcgen = "0.14"
 # improv_client's remote model service (feature `remote`): blocking HTTP/1.1
-# on rustls (ring, given explicitly) with the operating system's roots
-# (rustls-platform-verifier), never a compiled-in CA bundle. No gzip,
-# cookies or JSON helpers. Already in the tree through DuckDB's build.
+# on rustls (ring, given explicitly: `rustls-no-provider`) with the operating
+# system's roots (`platform-verifier`). No default features, so neither
+# native-tls nor webpki-roots (a compiled-in CA bundle) comes with it; no
+# gzip, cookies or JSON helpers. Already in the tree through DuckDB's build.
 ureq = { version = "3.5.1", default-features = false, features = ["platform-verifier", "rustls-no-provider"] }
