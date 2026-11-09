@@ -304,7 +304,20 @@ pub(crate) fn exists(table: &str) -> Res<bool> {
 /// changed.
 pub(crate) fn recompute(l: &mut Loaded, plan: &pm::Plan) -> Res<i64> {
     let owner = super::owner::owner_of(l.mid)?;
-    super::owner::as_role(owner, || write_plan(l, plan))
+    let changed = super::owner::as_role(owner, || write_plan(l, plan))?;
+    // Trigger and commit modes and recalc write results in the writer's
+    // transaction: its listeners hear of them when it commits, as of the
+    // sync worker's.
+    if changed > 0 {
+        let tx = super::owner::as_catalog(|| {
+            Ok(Spi::get_one_with_args::<i64>(
+                "SELECT tx FROM improv.model_version WHERE model_id = $1",
+                &[l.mid.into()],
+            )?)
+        })?;
+        super::notify(l.mid, tx.unwrap_or(0));
+    }
+    Ok(changed)
 }
 
 fn write_plan(l: &mut Loaded, plan: &pm::Plan) -> Res<i64> {

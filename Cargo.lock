@@ -3377,6 +3377,7 @@ dependencies = [
  "improv_storage_mentat",
  "improv_store",
  "mentatdb",
+ "postgres",
  "ratatui",
  "thiserror 2.0.21",
 ]

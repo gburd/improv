@@ -40,6 +40,8 @@ use ratatui::{
     Terminal,
 };
 use std::io;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
 
 // Coverage exclusion: process entry point (argv + `process::exit`); its logic
 // lives in `load`/`save`, which are tested.
@@ -69,6 +71,7 @@ fn load(path: &str) -> Result<App, String> {
     let mut app = App::new(model)?;
     app.save_token = save_token;
     app.saved = Some(saved);
+    app.heard = listen(path);
     // On its first saved view, else its first measure (H1-34).
     app.open_first_view();
     Ok(app)
@@ -96,15 +99,18 @@ fn run(mut app: App, path: &str) -> Result<(), String> {
         prev_hook(info);
     }));
 
+    // A key, or (a notification woke it) a synthetic FocusGained, so the
+    // screen says another program saved without waiting for a key.
+    let next = || loop {
+        if event::poll(std::time::Duration::from_millis(250))? {
+            return event::read();
+        }
+        if WAKE.swap(false, Ordering::SeqCst) {
+            return Ok(Event::FocusGained);
+        }
+    };
     let result = Terminal::new(CrosstermBackend::new(io::stdout()))
-        .and_then(|mut term| {
-            event_loop(
-                &mut term,
-                &mut app,
-                path,
-                std::iter::repeat_with(event::read),
-            )
-        })
+        .and_then(|mut term| event_loop(&mut term, &mut app, path, std::iter::repeat_with(next)))
         .map_err(|e| e.to_string());
 
     // Always restore on the normal path too.
@@ -173,16 +179,64 @@ where
     Ok(())
 }
 
+/// Set by a listening thread when a notification arrives: the terminal
+/// loop wakes to say so (see [`run`]).
+static WAKE: AtomicBool = AtomicBool::new(false);
+
+/// For a Postgres model whose database notifies (pg_improv 0.15+), its
+/// moved versions from a thread on a second connection; `None` otherwise.
+fn listen(path: &str) -> Option<mpsc::Receiver<i64>> {
+    let mut l = Store::open(path).ok()?.listen(path).ok()??;
+    let (tx, rx) = mpsc::channel();
+    std::thread::Builder::new()
+        .name("improv-tui-listen".into())
+        .spawn(move || {
+            // Ends with its connection, or when the session drops `rx`
+            // (the next send fails: one comes every 5 s at the latest).
+            while let Ok(vs) = l.wait(std::time::Duration::from_secs(5)) {
+                if !vs.is_empty() {
+                    WAKE.store(true, Ordering::SeqCst);
+                }
+                for v in vs.into_iter().chain([i64::MIN]) {
+                    if tx.send(v).is_err() {
+                        return;
+                    }
+                }
+            }
+        })
+        .ok()?;
+    Some(rx)
+}
+
 /// H9: the store's high-water when another writer saved since this session
-/// loaded or saved (`None` too when unknown or unreadable).
-fn outside_save(app: &App, path: &str) -> Option<i64> {
+/// loaded or saved (`None` too when unknown or unreadable). With
+/// notifications the store is read only after one names a version other
+/// than this session's (an older one of its own may still be queued, so
+/// the read decides); when the listener has stopped, on every check again.
+fn outside_save(app: &mut App, path: &str) -> Option<i64> {
     let mine = app.save_token.tx()?;
+    if let Some(rx) = &app.heard {
+        let mut moved = false;
+        loop {
+            match rx.try_recv() {
+                // i64::MIN: the listener's heartbeat.
+                Ok(v) => moved |= v != i64::MIN && v != mine,
+                Err(mpsc::TryRecvError::Empty) if !moved => return None,
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    app.heard = None;
+                    break;
+                }
+            }
+        }
+    }
     let hw = Store::open(path).and_then(|mut s| s.tx_high_water()).ok()?;
     (hw != mine).then_some(hw)
 }
 
-/// H9: on each key, say once per outside save that another program saved,
-/// and that `R` loads it. Saving from here is refused until then.
+/// H9: on each key (and each notification), say once per outside save that
+/// another program saved, and that `R` loads it. Saving from here is
+/// refused until then.
 fn check_outside(app: &mut App, path: &str) {
     let Some(hw) = outside_save(app, path) else {
         return;
@@ -196,7 +250,7 @@ fn check_outside(app: &mut App, path: &str) {
 /// Dispatch one terminal event by mode (edit / command prompt / normal),
 /// then save what it changed (H1-5).
 fn handle_event(app: &mut App, ev: Event, path: &str) {
-    if matches!(ev, Event::Key(_)) {
+    if matches!(ev, Event::Key(_)) || app.heard.is_some() {
         check_outside(app, path);
     }
     dispatch(app, ev, path);
@@ -1422,8 +1476,115 @@ mod tests {
         run_events(&mut a, p, vec![key(KeyCode::Down)]).unwrap();
         assert_eq!(a.status.as_deref(), Some("reverted to the saved model"));
         // An unreadable store or an unsaved model offers nothing.
-        assert_eq!(outside_save(&a, "/nonexistent/dir/x.db"), None);
-        assert_eq!(outside_save(&App::new(revenue_model()).unwrap(), p), None);
+        assert_eq!(outside_save(&mut a, "/nonexistent/dir/x.db"), None);
+        assert_eq!(
+            outside_save(&mut App::new(revenue_model()).unwrap(), p),
+            None
+        );
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// A Postgres model that notifies (pg_improv 0.15's trigger, stood in
+    /// for by an SQL one when the test database lacks pg_improv): the
+    /// session listens, says another program saved with no key pressed
+    /// (the notification's wake event), never for its own saves, and goes
+    /// back to the probe when the listener dies.
+    #[test]
+    fn a_notifying_postgres_model_says_so_without_a_key() {
+        let Ok(dsn) = std::env::var("IMPROV_TEST_PG") else {
+            println!("skipped: IMPROV_TEST_PG not set");
+            return;
+        };
+        let kv: std::collections::HashMap<_, _> = dsn
+            .split_whitespace()
+            .filter_map(|p| p.split_once('='))
+            .collect();
+        let get = |k| kv.get(k).copied().unwrap_or_default();
+        let url = format!(
+            "postgres://{}:{}@{}:{}/{}?model=tuinotify_{}",
+            get("user"),
+            get("password"),
+            get("host"),
+            match get("port") {
+                "" => "5432",
+                p => p,
+            },
+            get("dbname"),
+            std::process::id()
+        );
+        let mut store = Store::open(&url).unwrap();
+        store.save_model(&revenue_model()).unwrap();
+        let mut c = postgres::Client::connect(&dsn, postgres::NoTls).unwrap();
+        let has: bool = c
+            .query_one(
+                "SELECT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'version_moved')",
+                &[],
+            )
+            .unwrap()
+            .get(0);
+        if !has {
+            c.batch_execute(
+                "CREATE OR REPLACE FUNCTION public.improv_test_version_moved() RETURNS trigger
+                   LANGUAGE plpgsql AS $$ BEGIN
+                     PERFORM pg_notify('improv_' || NEW.model_id, NEW.tx::text); RETURN NULL;
+                   END $$;
+                 CREATE TRIGGER version_moved AFTER INSERT OR UPDATE OF tx
+                   ON improv.model_version FOR EACH ROW
+                   EXECUTE FUNCTION public.improv_test_version_moved();",
+            )
+            .unwrap();
+        }
+        let mut a = load(&url).unwrap();
+        assert!(a.heard.is_some(), "it listens");
+        view(&mut a, MeasureId(101));
+        // Its own save: no word of another program.
+        a.apply_edit(0, 0, 7.0).unwrap();
+        a.autosave(&url);
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        run_events(&mut a, &url, vec![Ok(Event::FocusGained)]).unwrap();
+        assert_ne!(
+            a.status.as_deref(),
+            Some("another program saved this model: press R to reload it")
+        );
+        // Another writer: the wake event says it, no key pressed.
+        let mut m = store.reload_model().unwrap();
+        m.add_view(a.build_view(improv_core_model::ViewId(9), "theirs"));
+        store.save_model(&m).unwrap();
+        let mut woke = false;
+        for _ in 0..100 {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            if WAKE.swap(false, Ordering::SeqCst) {
+                woke = true;
+                break;
+            }
+        }
+        assert!(woke, "a notification wakes the loop");
+        run_events(&mut a, &url, vec![Ok(Event::FocusGained)]).unwrap();
+        assert_eq!(
+            a.status.as_deref(),
+            Some("another program saved this model: press R to reload it")
+        );
+        // The listener killed: back to the probe on each key.
+        c.execute(
+            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity \
+             WHERE query LIKE 'LISTEN improv_%'",
+            &[],
+        )
+        .unwrap();
+        for _ in 0..100 {
+            std::thread::sleep(std::time::Duration::from_millis(60));
+            let _ = outside_save(&mut a, &url);
+            if a.heard.is_none() {
+                break;
+            }
+        }
+        assert!(a.heard.is_none(), "back to the probe");
+        if !has {
+            c.batch_execute(
+                "DROP TRIGGER version_moved ON improv.model_version;
+                 DROP FUNCTION public.improv_test_version_moved();",
+            )
+            .unwrap();
+        }
     }
 }

@@ -109,6 +109,32 @@ batches it fed to the live engine, `rebuilds` its full reloads. On an
 append-only fact table `rebuilds` stays put while `incremental_applies`
 grows.
 
+## Live updates
+
+A client can follow a model without polling. pg_improv sends
+`NOTIFY improv_<model id>, '<version>'` when the transaction commits,
+whenever the model's version (`improv.model_version.tx`) moved in it (a
+`define`, a binding, a mode switch, a save from a `postgres://` model in
+a GUI) and whenever it wrote result rows: the sync worker's apply, a
+`trigger` or `commit` mode recompute, an `improv.recalc`. The payload is
+the version number and nothing else: any role may `LISTEN` on any
+channel, so a notification never carries data. A rolled-back
+transaction or savepoint sends nothing, and a prepared transaction
+sends nothing (Postgres refuses to `PREPARE` one that has notified).
+
+```sql
+SELECT id FROM improv.model WHERE name = 'plan';   -- 1
+LISTEN improv_1;
+-- Asynchronous notification "improv_1" with payload "12" received ...
+```
+
+On a notification, re-read what you show through your normal path: the
+result tables and `improv.cells` apply the model's [access
+policies](#access-policies), so each listener sees only what it may.
+`improv-gui` and `improv-tui` on a `postgres://` model listen this way, on
+a second connection, and offer to reload when another program's change
+moves the version (their own saves notify too, and are recognized).
+
 ## Several rows per coordinate
 
 A fact table often has many rows per coordinate (one per order, say). Bind

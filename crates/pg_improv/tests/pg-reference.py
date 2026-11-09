@@ -49,6 +49,7 @@ INTERNAL = {
     "result_written": "Statement trigger on a filtered result table: a write marks the model's result rows stale (`improv.stale`) until a recalc checks them.",
     "row_visible": "Row-level security on a result table, per row under `cell_rule` 3: `cell_visible`'s answer for the row's dimension values (text, in the measure's category order), from a decision table kept for the query.",
     "plimprov_validator": "The `LANGUAGE improv` validator: checks the signature, and the body when `check_function_bodies` is on.",
+    "version_moved": "Row trigger on `improv.model_version`: a moved version queues the model's `NOTIFY improv_<model id>, '<version>'`, sent at commit (see [Live updates](./postgres.md#live-updates)).",
     "unrestricted": "Row-level security on the catalog: whether the caller may read model `model`'s measures, bindings, views and lambdas. True without access policies (0.12's rule) and for the owner's side.",
 }
 

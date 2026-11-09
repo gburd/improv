@@ -16,6 +16,8 @@ pub use improv_storage_mentat::StoredPolicies;
 /// past it a Mentat save reads every cell of the model, so a caller that
 /// saves a model holding only the changed cells stays at or under it.
 pub use improv_storage_mentat::SEEK_SAVE_LIMIT;
+/// A Postgres model's change notifications ([`Store::listen`]).
+pub use improv_storage_pg::Listener;
 use improv_storage_pg::PgModelStore;
 
 /// Either backend's error. Callers match [`StoreError::Conflict`] for the
@@ -203,6 +205,18 @@ impl Store {
 
     pub fn tx_high_water(&mut self) -> Result<i64> {
         delegate!(self, s => s.tx_high_water())
+    }
+
+    /// A second connection that hears the model's change notifications,
+    /// when its store sends them: a Postgres model under pg_improv 0.15+
+    /// (`url` is what this store was opened with). `None` otherwise (a
+    /// Mentat file, a DuckDB file, a plain catalog): poll
+    /// [`Store::tx_high_water`].
+    pub fn listen(&mut self, url: &str) -> Result<Option<Listener>> {
+        match self {
+            Store::Pg(s) => Ok(s.listen(url)?),
+            _ => Ok(None),
+        }
     }
 
     pub fn loaded_tx(&self) -> Option<i64> {

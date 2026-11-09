@@ -102,6 +102,25 @@ this project follows [Semantic Versioning](https://semver.org/).
   and rusqlite 0.41 bundle the fixed SQLite; every Improv binary that opens
   a model file or a SQL source (the CLI, TUI, GUIs and improv-server)
   carries it.
+### Changed
+
+- **pg_improv 0.15.0: live updates.** A transaction that moves a model's
+  version or writes its results (the sync worker, trigger and commit
+  modes, `improv.recalc`) sends `NOTIFY improv_<model id>,
+  '<model_version.tx>'` at its commit, the payload the number only. A
+  rolled-back transaction or savepoint and a prepared one send nothing.
+  `ALTER EXTENSION pg_improv UPDATE` adds the trigger
+  (`pg_improv--0.14.0--0.15.0.sql`); no existing row changes.
+
+- **The GUI and the TUI hear a Postgres model's changes.** On a
+  `postgres://` model under pg_improv 0.15 the desktop GUI and the TUI
+  `LISTEN` for its notifications on a second connection, in place of the
+  GUI's two-second probe and the TUI's check on every key: the
+  **Changed** panel (GUI) and "another program saved this model" (TUI,
+  now without a key) show as the other program commits. A database
+  without the notifications (no pg_improv, an older one) is polled as
+  before. `improv_store::Store::listen` and `improv_storage_pg::Listener`
+  are the API.
 
 ## [0.14.0] - 2026-11-08
 

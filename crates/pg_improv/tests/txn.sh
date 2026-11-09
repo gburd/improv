@@ -56,7 +56,7 @@ outside=$(q "SELECT count(*) FROM pg_depend d JOIN pg_extension e ON e.oid = d.r
                 OR (d.classid = 'pg_class'::regclass AND (SELECT relnamespace FROM pg_class WHERE oid = d.objid) <> 'improv'::regnamespace)
                 OR (d.classid = 'pg_type'::regclass AND (SELECT typnamespace FROM pg_type WHERE oid = d.objid) <> 'improv'::regnamespace)")
 eq "$outside" 0 "extension objects outside schema improv"
-eq "$(q "SELECT count(*) FROM pg_proc WHERE pronamespace = 'improv'::regnamespace")" 36 "functions in improv"
+eq "$(q "SELECT count(*) FROM pg_proc WHERE pronamespace = 'improv'::regnamespace")" 37 "functions in improv"
 q "CREATE TABLE sales (quarter text, product text, price float8, qty float8, PRIMARY KEY (quarter, product))"
 q "INSERT INTO sales VALUES ('Q1','Widget',10,100), ('Q1','Gadget',20,30)"
 for s in "create_model('plan')" "bind_category('plan','Time','sales','quarter')" \
@@ -144,6 +144,8 @@ wal_level = logical
 improv.database = 't'
 improv.poll_ms = 50
 max_prepared_transactions = 2"
+# (The pre-commit recompute queues a NOTIFY; Postgres refuses to PREPARE
+# a transaction that has notified, so a prepared one must send none.)
 q "BEGIN; UPDATE sales SET price = 18 WHERE quarter='Q1' AND product='Widget'; PREPARE TRANSACTION 'p1';"
 eq "$(q "$REV")" 3000 "commit mode: prepared, not yet committed"
 q "COMMIT PREPARED 'p1'"

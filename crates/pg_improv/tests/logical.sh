@@ -5,7 +5,8 @@
 # a writer streams, and a failing model that holds no one back. Section 20
 # stops the server with -m fast, idle and mid-batch. Section 21 applies
 # models in parallel (B1): a light model's change is visible beside four
-# slow ones; a kill -9 and a fast stop mid-round lose nothing. Needs: cargo-pgrx installed and pg_improv installed into the PG
+# slow ones; a kill -9 and a fast stop mid-round lose nothing. Section 23
+# checks the live-update notifications. Needs: cargo-pgrx installed and pg_improv installed into the PG
 # found by PG_BIN (default: Debian's PG 17). Uses its own data dir and port.
 #
 #   crates/pg_improv/tests/logical.sh            # run, print latency table
@@ -876,4 +877,77 @@ q "ALTER SYSTEM RESET log_min_messages"
 q "ALTER SYSTEM RESET autovacuum"
 q "SELECT pg_reload_conf()" >/dev/null
 echo "ok: idle, the worker listed its models $idle22 and $idle22b times in 5 s (about 100 polls); define, a new model, manual and back, a partition attached and a drop were each applied at once"
+
+# 23. live updates: NOTIFY improv_<model id>, '<model_version.tx>' at the
+#     commit of each transaction that moved the version or wrote results
+#     (the worker's apply, trigger and commit modes, recalc); the payload is
+#     the number only; nothing from a rollback, a rolled-back savepoint, a
+#     transaction that wrote no result, or a prepared transaction.
+q "CREATE TABLE t23 (k text PRIMARY KEY, v float8)"
+q "INSERT INTO t23 VALUES ('a', 1)"
+q "SELECT improv.create_model('m23')" >/dev/null
+q "SELECT improv.bind_category('m23', 'K', 't23', 'k')" >/dev/null
+q "SELECT improv.bind_measure('m23', 'V', 't23', 'v')" >/dev/null
+q "SELECT improv.define('m23', 'W = V * 2')" >/dev/null
+W23="SELECT string_agg(k || '=' || value, ',' ORDER BY k) FROM improv_m23.w"
+wait_for "$W23" "a=2" "m23 caught up" >/dev/null
+mid23=$(q "SELECT id FROM improv.model WHERE name = 'm23'")
+ver23() { q "SELECT tx FROM improv.model_version WHERE model_id = $mid23"; }
+# A listener: psql prints each notification after a command, so it runs one
+# every 50 ms (on a FIFO, so the session is one connection all along).
+N23=$D/notify23.log; F23=$D/notify23.fifo
+rm -f "$F23"; mkfifo "$F23"
+"$PG_BIN/psql" -h "$D" -p "$P" -U improv -d improv_e2e -qAtX <"$F23" >"$N23" 2>&1 &
+lpid23=$!
+exec 7>"$F23"
+echo "LISTEN improv_$mid23;" >&7
+( while kill -0 $lpid23 2>/dev/null; do echo "SELECT 1 WHERE false;" >&7 2>/dev/null || exit 0; sleep 0.05; done ) &
+tick23=$!
+heard() { grep -c "notification \"improv_$mid23\" with payload \"$1\"" "$N23" || true; }
+wait_heard() { # payload label
+	for _ in $(seq 1 200); do [ "$(heard "$1")" -ge 1 ] && return 0; sleep 0.05; done
+	echo "FAIL: no NOTIFY improv_$mid23 '$1' for $2"; cat "$N23"; exit 1
+}
+sleep 0.5
+# The worker's apply: the version, unchanged, as the payload.
+v=$(ver23)
+q "UPDATE t23 SET v = 5 WHERE k = 'a'"
+wait_for "$W23" "a=10" "m23 applied" >/dev/null
+wait_heard "$v" "the worker's apply"
+# A structural change: the new version.
+q "SELECT improv.define('m23', 'W = V * 3', replace => true)" >/dev/null
+v=$(ver23)
+wait_heard "$v" "define"
+wait_for "$W23" "a=15" "m23 redefined" >/dev/null
+# Trigger mode: entering it (the version) and a write (results, same version).
+q "SELECT improv.set_sync_mode('m23', 'trigger')" >/dev/null
+vt=$(ver23)
+wait_heard "$vt" "set_sync_mode"
+before=$(wc -l <"$N23")
+q "UPDATE t23 SET v = 6 WHERE k = 'a'"
+for _ in $(seq 1 100); do [ "$(wc -l <"$N23")" -gt "$before" ] && break; sleep 0.05; done
+[ "$(wc -l <"$N23")" -gt "$before" ] || { echo "FAIL: a trigger-mode write sent nothing"; exit 1; }
+# Nothing from a rollback, a rolled-back savepoint, or a write that leaves
+# every result as it was.
+sleep 0.3; before=$(wc -l <"$N23")
+q "BEGIN; UPDATE t23 SET v = 7 WHERE k = 'a'; ROLLBACK;"
+q "BEGIN; SAVEPOINT s; UPDATE t23 SET v = 8 WHERE k = 'a'; ROLLBACK TO s; COMMIT;"
+q "UPDATE t23 SET v = 6 WHERE k = 'a'"
+sleep 0.5
+eq14 "$(wc -l <"$N23")" "$before" "a rollback, a rolled-back savepoint and a no-op write notify nothing"
+# A recalc that changes nothing sends nothing; one that does, notifies.
+q "SELECT improv.set_sync_mode('m23', 'manual')" >/dev/null
+q "UPDATE t23 SET v = 9 WHERE k = 'a'"
+sleep 0.3; before=$(wc -l <"$N23")
+q "SELECT improv.recalc('m23')" >/dev/null
+for _ in $(seq 1 100); do [ "$(wc -l <"$N23")" -gt "$before" ] && break; sleep 0.05; done
+[ "$(wc -l <"$N23")" -gt "$before" ] || { echo "FAIL: a recalc that wrote results sent nothing"; exit 1; }
+# Every payload is a number, and only this model's channel is heard.
+bad=$(grep "notification" "$N23" | grep -vc "notification \"improv_$mid23\" with payload \"[0-9]*\" received" || true)
+eq14 "$bad" 0 "every notification is improv_<id> with a bare number"
+q "SELECT improv.set_sync_mode('m23', 'logical')" >/dev/null
+kill $tick23 $lpid23 2>/dev/null || true
+exec 7>&-
+wait $lpid23 2>/dev/null || true
+echo "ok: NOTIFY improv_<id>, '<version>' from the worker's apply, define, set_sync_mode, a trigger-mode write and a recalc; none from a rollback, a savepoint undone or a no-op write"
 echo "PASS"

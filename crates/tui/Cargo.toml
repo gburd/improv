@@ -25,6 +25,8 @@ crossterm.workspace = true
 # stored Cedar policies.
 improv_service = { path = "../service" }
 improv_policy = { path = "../policy" }
+# A Postgres model's notifications: the test's SQL connection.
+postgres = "0.19"
 # The crash-safety tests check the store file with SQLite's integrity_check.
 mentat.workspace = true
 improv_storage_mentat = { path = "../storage_mentat" }

@@ -355,6 +355,11 @@ unsafe extern "C-unwind" fn subxact_callback(
     parent: pg_sys::SubTransactionId,
     _arg: *mut std::ffi::c_void,
 ) {
+    match event {
+        pg_sys::SubXactEvent::SUBXACT_EVENT_ABORT_SUB => super::notify_subxact(true, my, parent),
+        pg_sys::SubXactEvent::SUBXACT_EVENT_COMMIT_SUB => super::notify_subxact(false, my, parent),
+        _ => {}
+    }
     WRITTEN.with(|w| {
         let mut w = w.borrow_mut();
         match event {
@@ -379,6 +384,9 @@ pub(crate) unsafe extern "C-unwind" fn xact_callback(
         XACT_EVENT_PRE_COMMIT | XACT_EVENT_PRE_PREPARE => pre_commit(),
         _ => forget(),
     }
+    // After the pre-commit recomputes, which may queue some; Postgres
+    // sends them after the callbacks (PreCommit_Notify).
+    super::send_notifications(event == XACT_EVENT_PRE_COMMIT);
 }
 
 /// Forget this transaction's writes and captures.

@@ -44,6 +44,12 @@ A new file, or a model with nothing in it, opens empty: build it with
 .BR c ,
 .BR n " and"
 .BR = .
+.PP
+When another program saves the model, the status line says so (press
+.B R
+to reload it). On a Postgres model under pg_improv 0.15 or later the TUI
+listens for the model's notifications on a second connection, and says it
+at once, without a key; otherwise it checks at each key.
 .SH OPTIONS
 .TP
 \fB\-h\fR, \fB\-\-help\fR

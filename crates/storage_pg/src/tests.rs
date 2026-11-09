@@ -1734,3 +1734,62 @@ fn live_tls_prefer_off_the_host_uses_tls() {
     ));
     assert!(e.contains("not valid for"), "{e}");
 }
+
+/// A listener hears its model's channel only, in order, the versions as
+/// numbers (a payload that is not one is skipped); a timeout with nothing
+/// is empty, and a killed connection is an error. (Without pg_improv
+/// nothing notifies, so the test sends them; `tests/logical.sh` checks
+/// pg_improv's.)
+#[test]
+fn a_listener_hears_its_models_notifications() {
+    let Some(url) = live("listen") else { return };
+    let mut s = PgModelStore::open(&url).unwrap();
+    // The plain catalog (no pg_improv 0.15 trigger) sends nothing: none.
+    let mut c = client();
+    let has: bool = c
+        .query_one(
+            "SELECT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'version_moved')",
+            &[],
+        )
+        .unwrap()
+        .get(0);
+    assert_eq!(s.listen(&url).unwrap().is_some(), has);
+    let (conn, _) = split_model_url(&url).unwrap();
+    let mut l = Listener::connect(&conn, s.model_id).unwrap();
+    let wait = std::time::Duration::from_millis(200);
+    assert_eq!(l.wait(wait).unwrap(), Vec::<i64>::new());
+    let me = format!("improv_{}", s.model_id);
+    c.batch_execute(&format!(
+        "BEGIN; NOTIFY {me}, '7'; NOTIFY improv_0, '9'; NOTIFY {me}, 'x'; NOTIFY {me}, '8'; COMMIT"
+    ))
+    .unwrap();
+    let mut got = Vec::new();
+    for _ in 0..20 {
+        got.extend(l.wait(wait).unwrap());
+        if got.len() >= 2 {
+            break;
+        }
+    }
+    assert_eq!(got, [7, 8]);
+    // Killed: the next wait says so.
+    let pid: i32 = l
+        .client
+        .query_one("SELECT pg_backend_pid()", &[])
+        .unwrap()
+        .get(0);
+    c.execute("SELECT pg_terminate_backend($1)", &[&pid])
+        .unwrap();
+    let mut gone = false;
+    for _ in 0..20 {
+        if l.wait(wait).is_err() {
+            gone = true;
+            break;
+        }
+    }
+    assert!(gone, "a terminated listener reports it");
+    // A bad connection string is refused, without echoing it.
+    let e = Listener::connect("host=127.0.0.1 port=1 password=s3cret", 1)
+        .err()
+        .unwrap();
+    assert!(!e.to_string().contains("s3cret"), "{e}");
+}

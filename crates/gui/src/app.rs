@@ -500,6 +500,13 @@ pub struct ImprovApp {
     /// at, `.1`): it shows again only when the mark moves on.
     probed_at: f64,
     outside: Option<(i64, bool)>,
+    /// A Postgres model's change notifications (pg_improv 0.15+), from a
+    /// thread on a second connection ([`Self::listen`]): each moved
+    /// version, in place of the [`PROBE_SECS`] probe. `None` for a Mentat
+    /// file, or once the thread stopped (then the probe again).
+    heard: Option<mpsc::Receiver<i64>>,
+    /// [`Self::listen`] has run for this store (it tries once).
+    listened: bool,
     /// A CSV import waiting for its "Importing…" status to be painted (the
     /// count of frames shown since it was asked for): the import and its
     /// full save block the UI thread for seconds on a large model.
@@ -1796,6 +1803,8 @@ impl ImprovApp {
             confirm_delete: None,
             probed_at: f64::NEG_INFINITY,
             outside: None,
+            heard: None,
+            listened: false,
             queued_import: None,
             desk: egui::vec2(INITIAL_WINDOW[0], INITIAL_WINDOW[1]),
         };
@@ -3704,9 +3713,33 @@ impl ImprovApp {
         (hw != mine).then_some(hw)
     }
 
-    /// H9: every [`PROBE_SECS`] (egui time `now`), look for another
-    /// writer's save, and offer Reload when there is a new one.
+    /// H9: look for another writer's save, and offer Reload when there is
+    /// a new one: when a Postgres model's notification arrives
+    /// ([`Self::listen`]), else every [`PROBE_SECS`] (egui time `now`).
     fn probe_store(&mut self, now: f64) {
+        if let Some(rx) = &self.heard {
+            let mut heard = Vec::new();
+            let gone = loop {
+                match rx.try_recv() {
+                    Ok(v) => heard.push(v),
+                    Err(mpsc::TryRecvError::Empty) => break false,
+                    Err(mpsc::TryRecvError::Disconnected) => break true,
+                }
+            };
+            // A version this window did not save at is another writer's
+            // (i64::MIN is the thread's heartbeat). Probe now, or once the
+            // save in flight lands.
+            let mine = self.save_token.tx();
+            if heard.iter().any(|v| *v != i64::MIN && Some(*v) != mine) {
+                self.probed_at = f64::NEG_INFINITY;
+            }
+            if gone {
+                // The listener stopped: back to polling.
+                self.heard = None;
+            } else if self.probed_at != f64::NEG_INFINITY {
+                return;
+            }
+        }
         // A save in flight moves the high-water itself: look after it lands.
         if self.db.is_empty() || now - self.probed_at < PROBE_SECS || self.saving.is_some() {
             return;
@@ -3719,14 +3752,58 @@ impl ImprovApp {
         }
     }
 
+    /// For a Postgres model, follow its notifications on a thread of its
+    /// own (a second connection), waking `ctx` for each; the probe then
+    /// runs only when one arrives. Nothing for a Mentat file, or when the
+    /// listening connection cannot be made (the probe polls, as before).
+    fn listen(&mut self, ctx: &egui::Context) {
+        if self.listened || !improv_store::is_postgres(&self.db) {
+            return;
+        }
+        self.listened = true;
+        let listener = Store::open(&self.db).and_then(|mut s| s.listen(&self.db));
+        let Ok(Some(mut l)) = listener else {
+            // Not again each frame: this model is polled.
+            self.heard = None;
+            self.listened = true;
+            return;
+        };
+        let (tx, rx) = mpsc::channel();
+        let ctx = ctx.clone();
+        let spawned = std::thread::Builder::new()
+            .name("improv-gui-listen".into())
+            .spawn(move || loop {
+                // Ends when the window goes (the receiver) or the
+                // connection does; a timeout checks the first.
+                match l.wait(std::time::Duration::from_secs(5)) {
+                    Ok(vs) => {
+                        for v in vs {
+                            if tx.send(v).is_err() {
+                                return;
+                            }
+                        }
+                        ctx.request_repaint();
+                    }
+                    Err(_) => return ctx.request_repaint(),
+                }
+                if tx.send(i64::MIN).is_err() {
+                    return;
+                }
+            });
+        if spawned.is_ok() {
+            self.heard = Some(rx);
+        }
+    }
+
     /// The Reload panel (H9): another program saved this model. Reload is
     /// File ▸ Revert to Saved; Not Now hides it until they save again.
     /// Nothing is overwritten either way: a save from this window would be
     /// refused as a conflict.
     fn reload_panel(&mut self, ctx: &egui::Context, ws: egui::Rect) {
         let now = ctx.input(|i| i.time);
+        self.listen(ctx);
         self.probe_store(now);
-        if !self.db.is_empty() {
+        if !self.db.is_empty() && self.heard.is_none() {
             ctx.request_repaint_after(std::time::Duration::from_secs_f64(PROBE_SECS));
         }
         let Some((hw, true)) = self.outside else {
@@ -5471,6 +5548,8 @@ impl ImprovApp {
         }
         store.save_model(&self.model).map_err(save_error)?;
         self.db = path.to_owned();
+        // Another store: listen to it (if it notifies) from the next frame.
+        (self.heard, self.listened) = (None, false);
         self.save_token = store.take_save_token();
         self.unsaved = Default::default();
         // The new store has everything; what the old one refused is moot.
@@ -10330,6 +10409,8 @@ mod tests {
             confirm_delete: None,
             probed_at: f64::NEG_INFINITY,
             outside: None,
+            heard: None,
+            listened: false,
             queued_import: None,
             desk: egui::vec2(INITIAL_WINDOW[0], INITIAL_WINDOW[1]),
         }
@@ -18642,6 +18723,106 @@ mod tests {
         app.save().expect("save to postgres");
         let back = store.reload_model().unwrap();
         assert_eq!(back.items[&ItemId(10)].name.0, "Q1x");
+    }
+
+    /// A Postgres model whose database notifies (pg_improv 0.15's
+    /// `version_moved` trigger; stood in for here by an SQL trigger of the
+    /// same name, when the test database lacks pg_improv): the window
+    /// listens instead of probing, its own save's echo raises nothing, and
+    /// another writer's save offers Reload as the notification lands,
+    /// without waiting for the probe.
+    #[test]
+    fn a_notifying_postgres_model_offers_reload_when_told() {
+        let Ok(dsn) = std::env::var("IMPROV_TEST_PG") else {
+            println!("skipped: IMPROV_TEST_PG not set");
+            return;
+        };
+        let kv: HashMap<_, _> = dsn
+            .split_whitespace()
+            .filter_map(|p| p.split_once('='))
+            .collect();
+        let get = |k| kv.get(k).copied().unwrap_or_default();
+        let url = format!(
+            "postgres://{}:{}@{}:{}/{}?model=guinotify_{}",
+            get("user"),
+            get("password"),
+            get("host"),
+            match get("port") {
+                "" => "5432",
+                p => p,
+            },
+            get("dbname"),
+            std::process::id()
+        );
+        let mut store = improv_store::Store::open(&url).unwrap();
+        store.save_model(&grid_2x2_model()).unwrap();
+        let mut sql = postgres::Client::connect(&dsn, postgres::NoTls).unwrap();
+        let has: bool = sql
+            .query_one(
+                "SELECT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'version_moved')",
+                &[],
+            )
+            .unwrap()
+            .get(0);
+        if !has {
+            sql.batch_execute(
+                "CREATE OR REPLACE FUNCTION public.improv_test_version_moved() RETURNS trigger
+                   LANGUAGE plpgsql AS $$ BEGIN
+                     PERFORM pg_notify('improv_' || NEW.model_id, NEW.tx::text); RETURN NULL;
+                   END $$;
+                 CREATE TRIGGER version_moved AFTER INSERT OR UPDATE OF tx
+                   ON improv.model_version FOR EACH ROW
+                   EXECUTE FUNCTION public.improv_test_version_moved();",
+            )
+            .unwrap();
+        }
+        let mut app = ImprovApp::load(&url).expect("load");
+        let (qkey, _) = q_and_rev_keys();
+        let mut desk = Desk::new();
+        desk.settle(&mut app);
+        assert!(app.heard.is_some(), "it listens");
+        // Its own save: notified, recognized, nothing offered.
+        app.set_cell(MeasureId(101), qkey.clone(), Value::Number(5.0))
+            .expect("its own save");
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        desk.settle(&mut app);
+        assert_eq!(app.outside, None, "its own save's echo");
+        // Another writer: offered at once, no probe interval waited out.
+        let mut m = store.reload_model().unwrap();
+        m.set_input(MeasureId(101), decode(&qkey), Value::Number(9.0));
+        store.save_model(&m).unwrap();
+        let mut offered = false;
+        for _ in 0..50 {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            desk.settle(&mut app);
+            if matches!(app.outside, Some((_, true))) {
+                offered = true;
+                break;
+            }
+        }
+        assert!(offered, "the notification offers Reload");
+        // A killed listener falls back to polling.
+        sql.execute(
+            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity \
+             WHERE query LIKE 'LISTEN improv_%'",
+            &[],
+        )
+        .unwrap();
+        for _ in 0..100 {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            desk.settle(&mut app);
+            if app.heard.is_none() {
+                break;
+            }
+        }
+        assert!(app.heard.is_none(), "back to the probe");
+        if !has {
+            sql.batch_execute(
+                "DROP TRIGGER version_moved ON improv.model_version;
+                 DROP FUNCTION public.improv_test_version_moved();",
+            )
+            .unwrap();
+        }
     }
 
     /// G2 through the GUI's real save path (it reopens the store for every

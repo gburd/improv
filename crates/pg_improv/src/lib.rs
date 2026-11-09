@@ -304,6 +304,7 @@ fn mint(mid: i64, new: Vec<(CategoryId, String)>) -> Res<Vec<(CategoryId, String
 
 /// Bump `improv.model_version`: the optimistic-concurrency token the GUI's
 /// store checks before every save. Every structural change calls this.
+/// The `version_moved` trigger sends the model's notification.
 fn bump_version(model_id: i64) -> Res<()> {
     Spi::run_with_args(
         "UPDATE improv.model_version SET tx = tx + 1 WHERE model_id = $1",
@@ -311,6 +312,103 @@ fn bump_version(model_id: i64) -> Res<()> {
     )?;
     Ok(())
 }
+
+thread_local! {
+    /// What this transaction notifies at commit ([`notify`]): per model,
+    /// its `model_version.tx` as seen, and the subtransaction that saw it.
+    static NOTIFY: std::cell::RefCell<Vec<(i64, i64, pg_sys::SubTransactionId)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// `NOTIFY improv_<model id>, '<tx>'` when this transaction commits: `tx`
+/// is the model's `improv.model_version.tx`, and the payload is the number
+/// and nothing else (any role may `LISTEN` on any channel). A client
+/// listens and re-reads through its normal path, which applies the model's
+/// policies. Queued here and sent by [`send_notifications`] at
+/// `PRE_COMMIT`, once per model with its last `tx`: Postgres refuses to
+/// `PREPARE` a transaction that has called `NOTIFY`, so a prepared one
+/// sends none, and a rolled-back savepoint takes its own back
+/// ([`notify_subxact`]).
+pub(crate) fn notify(model_id: i64, tx: i64) {
+    // SAFETY: a read of the backend's transaction state, in a transaction.
+    let sub = unsafe { pg_sys::GetCurrentSubTransactionId() };
+    NOTIFY.with(|n| n.borrow_mut().push((model_id, tx, sub)));
+}
+
+/// A subtransaction ended: an aborted one's notifications go, a committed
+/// one's belong to its parent.
+pub(crate) fn notify_subxact(
+    aborted: bool,
+    my: pg_sys::SubTransactionId,
+    parent: pg_sys::SubTransactionId,
+) {
+    NOTIFY.with(|n| {
+        let mut n = n.borrow_mut();
+        match aborted {
+            true => n.retain(|(.., s)| *s != my),
+            false => n
+                .iter_mut()
+                .filter(|(.., s)| *s == my)
+                .for_each(|x| x.2 = parent),
+        }
+    });
+}
+
+/// At the end of a transaction (`commit::xact_callback`): send the queued
+/// notifications when `send` (pre-commit), else drop them (prepare, abort).
+pub(crate) fn send_notifications(send: bool) {
+    let queued = NOTIFY.with(|n| std::mem::take(&mut *n.borrow_mut()));
+    if !send {
+        return;
+    }
+    let last: std::collections::BTreeMap<i64, i64> =
+        queued.into_iter().map(|(m, tx, _)| (m, tx)).collect();
+    for (mid, tx) in last {
+        let channel = std::ffi::CString::new(format!("improv_{mid}")).expect("no NUL");
+        let payload = std::ffi::CString::new(tx.to_string()).expect("no NUL");
+        // SAFETY: in the committing transaction, before PreCommit_Notify
+        // reads the list this appends to; it copies both strings.
+        unsafe { pg_sys::Async_Notify(channel.as_ptr(), payload.as_ptr()) };
+    }
+}
+
+/// The trigger on `improv.model_version`: a moved version (a structural
+/// change here, or a store's save) notifies the model's listeners.
+#[pg_trigger]
+fn version_moved<'a>(
+    t: &'a PgTrigger<'a>,
+) -> Result<Option<PgHeapTuple<'a, AllocatedByPostgres>>, PgHeapTupleError> {
+    let r = (|| -> Res<()> {
+        let new = t.new().ok_or("no new row")?;
+        let mid: i64 = new.get_by_name("model_id")?.ok_or("no model_id")?;
+        let tx: i64 = new.get_by_name("tx")?.ok_or("no tx")?;
+        let moved = match t.old() {
+            Some(old) => old.get_by_name::<i64>("tx")? != Some(tx),
+            None => true,
+        };
+        if moved {
+            notify(mid, tx);
+        }
+        Ok(())
+    })();
+    if let Err(e) = r {
+        error!("improv.version_moved: {e}");
+    }
+    Ok(None)
+}
+
+extension_sql!(
+    r#"
+-- Live updates (docs/reviews/2026-11-02-cedar-policies.md, "Live updates"):
+-- a moved improv.model_version notifies improv_<model id> with the new
+-- version, at commit. ALWAYS: a logical subscriber's applied save too.
+CREATE TRIGGER version_moved AFTER INSERT OR UPDATE OF tx ON improv.model_version
+  FOR EACH ROW EXECUTE FUNCTION improv.version_moved();
+ALTER TABLE improv.model_version ENABLE ALWAYS TRIGGER version_moved;
+"#,
+    name = "version_notify",
+    requires = ["catalog", version_moved]
+);
 
 /// Error unless `rel` has a live column `col`.
 fn check_column(rel: &PgRelation, col: &str) -> Res<()> {

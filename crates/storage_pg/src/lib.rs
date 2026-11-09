@@ -817,6 +817,53 @@ pub struct PgModelStore {
     has_format: bool,
 }
 
+/// A connection that `LISTEN`s on one model's channel (`improv_<id>`).
+/// pg_improv 0.15+ notifies it at the commit of every transaction that
+/// moved the model's version or wrote its results, with the version as
+/// the payload; without pg_improv (or an older one) nothing arrives, and a
+/// client keeps polling [`PgModelStore::tx_high_water`].
+pub struct Listener {
+    client: Client,
+}
+
+impl Listener {
+    /// Connect to `conn` (a connection string without `?model=`) and
+    /// `LISTEN` on model `model_id`'s channel.
+    fn connect(conn: &str, model_id: i64) -> Result<Listener> {
+        let mut client = tls::connect(conn).map_err(|e| {
+            StoreError::Pg(match e {
+                tls::ConnectError::Refused(m) => m,
+                tls::ConnectError::Tls(m) => format!("postgres connect failed: {m}"),
+                tls::ConnectError::Driver(_) => "postgres connect failed (connection error)".into(),
+            })
+        })?;
+        client.batch_execute(&format!("LISTEN improv_{model_id}"))?;
+        Ok(Listener { client })
+    }
+
+    /// Wait up to `timeout` for notifications; the versions they carry, in
+    /// order (empty when none came). `Err` when the connection is gone:
+    /// open another to keep listening.
+    pub fn wait(&mut self, timeout: std::time::Duration) -> Result<Vec<i64>> {
+        use postgres::fallible_iterator::FallibleIterator;
+        let mut out = Vec::new();
+        let first = self.client.notifications().timeout_iter(timeout).next()?;
+        if let Some(m) = first {
+            out.extend(m.payload().parse::<i64>().ok());
+            // Then what is queued already, without waiting again.
+            let mut n = self.client.notifications();
+            let mut queued = n.iter();
+            while let Some(m) = queued.next()? {
+                out.extend(m.payload().parse::<i64>().ok());
+            }
+        }
+        if out.is_empty() && self.client.is_closed() {
+            return Err(StoreError::Pg("the listening connection closed".into()));
+        }
+        Ok(out)
+    }
+}
+
 /// Why a save with number formats fails on a catalog without the column.
 const NO_FORMAT_COLUMN: &str = "this database's improv.measure has no format column, so \
      number formats cannot be saved: update the extension (ALTER EXTENSION pg_improv UPDATE, \
@@ -985,6 +1032,30 @@ impl PgModelStore {
                 &[],
             )?
             .get(0))
+    }
+
+    /// A second connection to the same database that listens for this
+    /// model's notifications ([`Listener`]), when the database sends them:
+    /// pg_improv 0.15+ notifies every move of the model's version, from
+    /// every writer, by a trigger on `improv.model_version`. `None` without
+    /// it (no pg_improv, an older one, or the trigger disabled): poll
+    /// [`Self::tx_high_water`] then. `url` is the one this handle was
+    /// opened with.
+    pub fn listen(&mut self, url: &str) -> Result<Option<Listener>> {
+        let notifies: bool = self
+            .client
+            .query_one(
+                "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_trigger \
+                 WHERE tgrelid = pg_catalog.to_regclass('improv.model_version') \
+                 AND tgname = 'version_moved' AND tgenabled <> 'D')",
+                &[],
+            )?
+            .get(0);
+        if !notifies {
+            return Ok(None);
+        }
+        let (conn, _) = split_model_url(url)?;
+        Listener::connect(&conn, self.model_id).map(Some)
     }
 
     /// The model's current `improv.model_version.tx`, read live.

@@ -656,6 +656,10 @@ pub struct App {
     /// H9: the outside high-water already reported, so the status line says
     /// it once per outside save.
     pub outside_seen: Option<i64>,
+    /// A Postgres model's change notifications (pg_improv 0.15+), from a
+    /// listening thread: each moved version. With it, H9 needs no store
+    /// probe on every key; `None` for a file (or once it stopped).
+    pub heard: Option<std::sync::mpsc::Receiver<i64>>,
     /// `q` was pressed and its save failed: the next `q` quits anyway.
     pub quit_armed: bool,
     /// `R` was pressed with something to lose (H1-20): the next `R`
@@ -736,6 +740,7 @@ impl App {
             redo_stack: Vec::new(),
             defining: false,
             outside_seen: None,
+            heard: None,
             quit_armed: false,
             revert_armed: false,
             confirm_constant: None,

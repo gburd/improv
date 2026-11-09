@@ -2079,7 +2079,13 @@ enum Applied {
     Rebuild,
 }
 
+/// Record a poll's progress in the model's worker transaction; result
+/// rows written (`changed > 0`) notify the model's listeners when it
+/// commits ([`super::notify`]).
 fn record(mid: i64, changed: i64, lsn: Option<u64>, how: Applied) -> Res<()> {
+    if changed > 0 {
+        super::notify(mid, model_version(mid)?);
+    }
     Spi::run_with_args(
         "UPDATE improv.sync_state SET last_applied_at = now(), last_error = NULL, \
            rows_applied = rows_applied + $2, \
