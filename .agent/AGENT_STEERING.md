@@ -142,8 +142,10 @@ criteria" are the bar. Mark tasks done there as they land.
   `crates/gui_web` (egui on wasm32, the desktop's theme/nxwin/menu by
   `#[path]`), checked by `crates/gui_web/e2e/e2e.sh` in headless
   Chromium. Its guide is `docs/src/web-gui.md`; what is left is in the
-  plan's I2 row. Not screen-reader accessible yet (eframe's web runner
-  drops AccessKit).
+  plan's I2 row. Screen-reader and keyboard access (0.15): egui's
+  AccessKit tree mirrored as hidden ARIA DOM in the canvas
+  (`crates/gui_web/src/{a11y,bridge}.rs`), the grid an ARIA grid with a
+  keyboard cursor; design in `docs/reviews/2026-11-08-web-accessibility.md`.
 - **NEXT:** J6 at 1.0 (needs the `COMMUNITY_EXT_PAT` and `PGORG_*`
   secrets); 1.0.0-rc.1 once the exit criteria hold (J4's soak is skipped
   for now, the maintainer's call). Not now: a Homebrew tap

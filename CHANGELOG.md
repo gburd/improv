@@ -25,6 +25,18 @@ this project follows [Semantic Versioning](https://semver.org/).
   refused, naming the server, while web GUI and other `/v1` clients edit
   the model live under its access policies, each edit reaching the others
   on `GET /v1/changes`.
+- **The web GUI works with a screen reader and the keyboard.** eframe's
+  web runner drops egui's accessibility tree, so the web GUI keeps hidden
+  ARIA elements inside its canvas in step with it (never drawn: the
+  screenshot golden is unchanged). The worksheet grid is an ARIA grid
+  whose cells are announced with their row and column headers and value.
+  Tab reaches it at a cursor cell that the arrows, Home and End move,
+  and Enter or typing edits the cell. Tab also reaches the tiles (Enter
+  opens Move to…), the formulas and the menus, and a screen reader's
+  "activate" runs a menu row. The status bar is a live region and a
+  formula error an alert. Not yet tried with a real screen reader (the
+  checks read Chromium's accessibility tree), and a field's text cannot
+  be read back while typing. See the web GUI guide, "Accessibility".
 
 ## [0.14.0] - 2026-11-08
 

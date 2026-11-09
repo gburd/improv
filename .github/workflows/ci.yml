@@ -484,7 +484,8 @@ jobs:
   # The web GUI (crates/gui_web) in headless Chromium: two browser sessions
   # on one improv-server; an edit in one reaches the other within a second,
   # a server restart is caught up, pivot by drag, a located formula error,
-  # undo, a page item (crates/gui_web/e2e/drive.py).
+  # undo, a page item, and the accessibility tree a screen reader reads
+  # (crates/gui_web/e2e/drive.py).
   web-e2e:
     name: Web GUI in Chromium
     runs-on: ubuntu-latest

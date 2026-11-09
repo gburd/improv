@@ -16,7 +16,12 @@ Two browser sessions (two tabs, two logins) on one improv-server:
 7. Ctrl+Z in A undoes A's last edit, and B shows it;
 8. with ADD_REGION set (a command that adds a measure over a third
    category), A picks a page item and sees that page's cells;
-9. screenshots of both tabs.
+9. a third session with a screen reader's view (Chromium's accessibility
+   tree, `Accessibility.getFullAXTree`): the grid's cells are named with
+   their row and column headers and values; Tab reaches the menus, tiles
+   and formulas; the arrows move in the grid, Enter edits a cell, and a
+   screen reader's activation of a menu row runs it;
+10. screenshots of both tabs.
 
 The app publishes its visible cells (position and text) on <body
 data-cells> and its status in the page title; that is how a test reads a
@@ -123,6 +128,61 @@ class Tab:
             self.cdp("Input.dispatchKeyEvent", type=kind, key=key, code=code or key,
                      windowsVirtualKeyCode=vk, nativeVirtualKeyCode=vk)
 
+    def typed(self, text):
+        """Type `text` as key presses (a canvas takes no insertText)."""
+        for ch in text:
+            for kind in ("keyDown", "keyUp"):
+                self.cdp("Input.dispatchKeyEvent", type=kind, key=ch, text=ch if kind == "keyDown" else "",
+                         windowsVirtualKeyCode=ord(ch.upper()))
+
+    def ax(self):
+        """The page's accessibility tree, as a screen reader gets it: the
+        nodes not ignored, each (role, name, properties, parent id)."""
+        nodes = self.cdp("Accessibility.getFullAXTree")["nodes"]
+        return [(n["role"]["value"], n.get("name", {}).get("value", ""),
+                 {p["name"]: p["value"].get("value") for p in n.get("properties", [])},
+                 n.get("parentId"), n["nodeId"]) for n in nodes if not n.get("ignored")]
+
+    def active(self):
+        """The element the screen reader's focus is on: the canvas's
+        aria-activedescendant (role, name, text), or the focused input."""
+        return self.js("""(() => {
+          const c = document.getElementById('improv');
+          const id = c.getAttribute('aria-activedescendant');
+          const e = id && document.getElementById(id);
+          const f = document.activeElement;
+          return {role: e ? e.getAttribute('role') : null,
+                  name: e ? (e.getAttribute('aria-label') || e.getAttribute('aria-placeholder') || e.textContent) : null,
+                  id: id, dom: f === c ? 'canvas' : f.tagName + ':' + (f.getAttribute('aria-label') || '')};
+        })()""")
+
+    def press(self, key, code=None, vk=0, moved=None):
+        """Press `key` and wait (5 s at most) for the screen reader's focus
+        to move off the element it was on, or until `moved(active)`: a
+        frame is drawn after the key, not at a fixed time (a loaded
+        runner draws slowly). The new focus."""
+        was = self.active()
+        self.key(key, code, vk)
+        moved = moved or (lambda a: a["id"] not in (None, was["id"]))
+        return self.wait(lambda: (a := self.active()) and moved(a) and a,
+                         f"the focus to move on {key} from {was}", secs=5)
+
+    def editing(self):
+        """Wait for a cell's editor to have the keyboard (eframe's text
+        input, focused a frame after the editor opens), before typing."""
+        self.wait(lambda: self.js("document.activeElement.tagName") == "INPUT", "the cell editor", secs=10)
+
+    def tab_to(self, pred, what, most=80):
+        """Press Tab until the screen reader's focus is on what `pred`
+        accepts; every stop on the way, in order."""
+        seen = []
+        for _ in range(most):
+            act = self.press("Tab", vk=9)
+            seen.append(act)
+            if pred(act):
+                return seen
+        raise SystemExit(f"Tab never reached {what}; stops: {[(x['role'], x['name']) for x in seen]}")
+
     def type(self, text):
         self.cdp("Input.insertText", text=text)
 
@@ -193,7 +253,7 @@ try:
 
     # 2-3: an edit in A appears in B, recalculated, within a second.
     a.click(q["x"], q["y"], clicks=2)
-    time.sleep(0.3)
+    a.editing()
     a.type("150")
     t0 = time.time()
     a.key("Enter", vk=13)
@@ -219,7 +279,7 @@ try:
         subprocess.run(["bash", "-c", restart], check=True)
         a.wait(lambda: "connecting" not in a.title(), "A back", secs=15)
         a.click(q["x"], q["y"], clicks=2)
-        time.sleep(0.3)
+        a.editing()
         a.type("7")
         a.key("Enter", vk=13)
         t0 = time.time()
@@ -300,12 +360,90 @@ try:
         pages = json.loads(a.js("document.body.dataset.pages || '[]'"))
         pick = next(p for p in pages if p["measure"] == "Sales")
         a.click(pick["x"], pick["y"])
-        time.sleep(0.3)
-        opt = json.loads(a.js("document.body.dataset.pageitems || '[]'"))
-        south = next(o for o in opt if o["name"] == "South")
+        # The list's first frames still lay out: click South where it settles.
+        south = a.settled(lambda: next((o for o in json.loads(a.js("document.body.dataset.pageitems || '[]'"))
+                                        if o["name"] == "South"), None), "South in the page list")
         a.click(south["x"], south["y"])
         a.wait(lambda: (c := a.cell("Sales", [[1, 10], [2, 20], [3, 31]])) and c["text"] == "9", "South's page")
         print("paged: Sales on Region = South shows its cells")
+
+    # 9: a screen reader's view, in a session of its own.
+    s = new_tab(br)
+    login(s)
+    s.wait(lambda: loaded(s, R) and loaded(s, Q), "the third session's cells")
+    s.cdp("Accessibility.enable")
+    time.sleep(0.5)
+    tree = s.ax()
+    by = {n[4]: n for n in tree}
+    def under(node, role):
+        """The nearest ancestor of `node` with `role`."""
+        p = node[3]
+        while p in by and by[p][0] != role:
+            p = by[p][3]
+        return by.get(p)
+    cells = [n for n in tree if n[0] == "gridcell"]
+    q_cell = s.cell(Q, at)["text"]
+    want_q = f"2025Q1, Widget: {q_cell}"
+    cell = next((n for n in cells if n[1] == want_q), None)
+    assert cell, f"no gridcell {want_q!r}; cells: {[n[1] for n in cells][:12]}"
+    grid = under(cell, "grid")
+    assert grid and grid[1] == Q, grid
+    row = under(cell, "row")
+    heads = [n[1] for n in tree if n[3] == row[4] and n[0] == "rowheader"]
+    assert heads == ["2025Q1"], heads
+    cols = [n[1] for n in tree if n[0] == "columnheader" and under(n, "grid") == grid]
+    assert "Widget" in cols and "Gadget" in cols, cols
+    assert cell[2].get("readonly") is False, cell
+    # Chromium lists aria-rowcount only when rows are missing: read the
+    # mirror's attributes (1 header row + 8 quarters, 1 header + 3 products).
+    dims = s.js("""(() => { const g = [...document.querySelectorAll('#improv [role=grid]')]
+        .find(g => g.getAttribute('aria-label') === 'Quantity');
+      const c = [...g.querySelectorAll('[role=gridcell]')].find(c => c.getAttribute('aria-label').startsWith('2025Q1, Widget'));
+      return [g.getAttribute('aria-rowcount'), g.getAttribute('aria-colcount'),
+              c.parentElement.getAttribute('aria-rowindex'), c.getAttribute('aria-colindex')] })()""")
+    assert dims == ["9", "4", "2", "2"], dims
+    print(f"AX: grid {grid[1]!r} (aria-rowcount {dims[0]}, aria-colcount {dims[1]}); "
+          f"columnheaders {cols}; rowheader {heads[0]!r}; "
+          f"gridcell {cell[1]!r} (aria-rowindex {dims[2]}, aria-colindex {dims[3]})")
+    rev = next(n for n in cells if n[1].startswith("2025Q1, Widget: ") and under(n, "grid")[1] == R)
+    assert rev[2].get("readonly") is True, rev
+    print(f"AX: a derived cell is read-only: {rev[1]!r} readonly={rev[2]['readonly']}")
+    canvas = next(n for n in tree if n[0] == "application")
+    assert canvas[1] == "Improv" and canvas[2].get("focused"), canvas
+    # Tab reaches the menus, tiles and formulas (the stops in order).
+    stops = s.tab_to(lambda x: x["role"] == "combobox" and x["name"] == "View", "the View menu")
+    kinds = [(x["role"], x["name"]) for x in stops]
+    assert any(r == "button" and n.startswith("Time tile") for r, n in kinds), kinds
+    assert any(r == "gridcell" for r, n in kinds), kinds
+    assert any(r == "button" and n == "Revenue = Price * Quantity" for r, n in kinds), kinds
+    assert any(r == "textbox" and n == "Name = formula" for r, n in kinds), kinds
+    assert any(r == "combobox" and n == "File" for r, n in kinds), kinds
+    print(f"Tab: {len(stops)} stops reach the tiles, the cells, the formulas and the menus: "
+          + ", ".join(f"{r} {n!r}" for r, n in kinds if r in ("textbox", "combobox") or n.startswith("Time tile")))
+    # A menu row: Enter opens its submenu, and a screen reader's activation
+    # (a click on the row's element) runs it.
+    s.press("Enter", vk=13, moved=lambda a: s.js("!![...document.querySelectorAll('#improv [role=button]')].find(e => e.getAttribute('aria-label') === 'New View')"))
+    nwin = s.js("[...document.querySelectorAll('#improv [role=heading]')].filter(e => /Worksheet$/.test(e.textContent)).length")
+    add = s.js("(() => { const e = [...document.querySelectorAll('#improv [role=button]')].find(e => e.getAttribute('aria-label') === 'New View'); if (e) e.click(); return !!e })()")
+    assert add, "no New View row in the open View menu"
+    s.wait(lambda: s.js("[...document.querySelectorAll('#improv [role=heading]')].filter(e => /Worksheet$/.test(e.textContent)).length") == nwin + 1,
+           "a new worksheet window from the screen reader's click", secs=5)
+    print(f"menu: Enter opens View, activating 'New View' opens a window ({nwin} -> {nwin + 1})")
+    # The grid: Tab to Quantity's cell, Down moves the cursor, Enter edits,
+    # typing and Enter commit, and the cell has the focus again.
+    s.tab_to(lambda x: x["role"] == "gridcell" and x["name"].startswith("2025Q1, Widget: ") and x["name"] != rev[1],
+             "Quantity's first cell")
+    act = s.press("ArrowDown", "ArrowDown", vk=40)
+    assert act["role"] == "gridcell" and act["name"].startswith("2025Q2, Widget: "), act
+    act = s.press("Enter", vk=13, moved=lambda a: a["dom"].startswith("INPUT"))
+    assert act["role"] == "textbox" and act["name"] == "2025Q2, Widget: editing", act
+    assert act["dom"] == "INPUT:2025Q2, Widget: editing", act
+    s.typed("42")
+    s.key("Enter", vk=13)
+    s.wait(lambda: (c := s.cell(Q, [[1, 11], [2, 20]])) and c["text"] == "42", "Quantity[2025Q2, Widget] = 42", secs=5)
+    s.wait(lambda: s.active()["name"] == "2025Q2, Widget: 42", "the cell's focus back", secs=5)
+    print(f"grid: Down, Enter, 42, Enter: {s.active()['name']!r} has the focus "
+          f"(DOM focus {s.active()['dom']})")
 
     time.sleep(0.5)
     a.shot(os.path.join(out, "web-a.png"))

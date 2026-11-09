@@ -5,8 +5,13 @@ canvas, over `improv-server`'s `/v1` API (`improv_client::wire`). The
 model, the engine and the store stay in the server; this crate draws and
 sends edits. User guide: [`docs/src/web-gui.md`](../../docs/src/web-gui.md).
 
-- `src/layout.rs`: a worksheet's pivot and the cell cache (value, blank,
-  not loaded). Pure; built and tested on every target.
+- `src/layout.rs`: a worksheet's pivot, the cell cache (value, blank,
+  not loaded) and the grid's keyboard cursor. Pure; built and tested on
+  every target.
+- `src/a11y.rs`: egui's AccessKit tree as ARIA elements, and each
+  frame's changes to them. Pure; tested on every target.
+- `src/bridge.rs`: keeps hidden DOM in the canvas in step with that tree,
+  and sends a screen reader's clicks and focus back to egui.
 - `src/net.rs`: the remote `ModelService` (`fetch`, and the change stream
   read with `fetch`, with backoff and `?since=` resume).
 - `src/app.rs`: the worksheet windows, gutters and tiles, grid, formula

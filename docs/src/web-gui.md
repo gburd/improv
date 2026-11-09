@@ -50,11 +50,14 @@ open mode (no tokens, loopback only) logs in at once.
   measures, open at start. Windows move and resize as on the desktop.
 - **Pivoting.** Each worksheet has Pages, Columns and Rows gutters, with
   a tile for each category. Drag a tile to another gutter to pivot, or
-  right-click it for Move to…. Several categories may stack on one axis.
+  right-click it (or Tab to it and press Enter) for Move to…. Several
+  categories may stack on one axis.
   A page category's tile has a list to pick the page item from, and
   every item of a page category can be picked.
 - **Cells.** Double-click an input cell to edit it, then Enter writes it
-  (Esc cancels). A value is read by the measure's type: numbers as the
+  (Esc cancels). From the keyboard: Tab to the grid, move with the
+  arrows, Home and End (Ctrl+Home, Ctrl+End: the corners), and press
+  Enter or start typing to edit. A value is read by the measure's type: numbers as the
   desktop reads them (`$1,500`), text, `true`/`false`, dates
   (`2025-01-31`). An empty cell clears it. A refused edit says why, and
   the cell shows the server's value again.
@@ -100,8 +103,7 @@ button.*
 
 The CSV wizard, graphs, the Info panel, the Inspector and the Format
 panel, printing, context help, function help (F1), scenarios, item
-filters, keyboard navigation of the grid, and range selection with Copy
-and Paste are desktop-only. A model with more
+filters, and range selection with Copy and Paste are desktop-only. A model with more
 than about 200,000 cells on one page needs paging the grid does not do
 yet.
 
@@ -117,12 +119,56 @@ server.
 
 ## Accessibility
 
-**Not screen-reader accessible.** eframe's web runner does not pass
-egui's AccessKit tree to the browser (as of eframe 0.37), so a screen
-reader sees one canvas. The desktop GUI is accessible (AccessKit, H2).
-Building a hidden DOM table that mirrors the visible grid for screen
-readers is on the plan (road-to-1.0 I2). Until then, use the desktop GUI
-or the TUI with a screen reader.
+The web GUI works with the keyboard and a screen reader. eframe's web
+runner does not pass egui's accessibility tree to the browser (as of
+eframe 0.37), so the web GUI does it itself: it keeps hidden elements
+inside the canvas in step with the tree, with ARIA roles, names and
+states. They are never drawn. (The design note is
+`docs/reviews/2026-11-08-web-accessibility.md`.)
+
+What works:
+
+- **The grid** is an ARIA grid. A screen reader announces each cell with
+  its row and column headers and its value ("2025Q1, Widget: 100"), and
+  can say its row and column position. A computed cell is read-only. Tab
+  reaches the grid at its cursor cell. The arrows, Home and End move it,
+  and Enter or typing edits the cell. Enter commits, Esc cancels, and
+  the cell has the focus again.
+- **Tab and Shift+Tab** go through everything in order: each window's
+  title and close box, its tiles and page lists, its grid, the formulas
+  and the `Name = formula` line, the main menu's rows, the Model
+  Browser, and the status bar. The formula line keeps Tab only while its
+  completion list is open (Tab accepts).
+- **Menus.** Enter on a menu row opens its submenu or runs it, and so
+  does a screen reader's "activate". A tile's Enter opens its Move to
+  menu.
+- **Focus.** The screen reader follows the keyboard focus. When the
+  screen reader moves onto an element (browse mode, a rotor, a click),
+  the app's focus moves there too.
+- **Announcements.** The status bar is a live region: "ready", "not
+  saved: …" and other status messages are read when they change. A
+  formula error is an alert.
+- **Names.** Every control has one: the tiles say their axis, the
+  Model Browser's buttons say what they act on, and the login and
+  prompt fields are labeled.
+
+What does not:
+
+- **Reading a field back.** While a text field has the keyboard, the
+  screen reader echoes what is typed, but it cannot read back or review
+  the whole field: the browser's input only holds the text being typed
+  (eframe's input agent).
+- **Positions on screen.** The hidden elements have no layout, so a
+  magnifier or a focus highlight that follows them shows the whole
+  canvas.
+- **Rows scrolled out of view** are left out of the grid (the grid's
+  row count still says how many there are), except the cursor's row.
+  Move the cursor to reach them.
+- **Not yet tried with Orca, NVDA, JAWS or VoiceOver.** The checks read
+  Chromium's accessibility tree, which is what a screen reader reads.
+  The desktop GUI's screen-reader runs are still open too (road-to-1.0
+  H2). The look has one text size, as on the desktop, and browser zoom
+  scales the whole canvas.
 
 ## Testing it
 
@@ -135,5 +181,9 @@ headless Chromium over the DevTools protocol (`drive.py`). It edits a
 cell in one and checks the other shows it, recalculated, within a second.
 It restarts the server mid-session and checks the other session catches
 up, then pivots by dragging a tile and types a misspelled formula to
-check where the error lands. The app publishes its visible cells, tiles
+check where the error lands. A third session reads Chromium's
+accessibility tree (DevTools `Accessibility.getFullAXTree`): the grid's
+cells carry their headers and values, Tab reaches the tiles, cells,
+formulas and menus, a screen reader's click on a menu row runs it, and
+the keyboard edits a cell. The app publishes its visible cells, tiles
 and formula error on `<body data-…>`, which is how a test reads a canvas.

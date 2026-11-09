@@ -17,7 +17,9 @@ Usage: scripts/web-e2e.sh [--update]
 Builds crates/gui_web (crates/gui_web/build.sh --release), improv and
 improv-server, runs crates/gui_web/e2e/e2e.sh (two sessions: a live edit,
 a server restart caught up, a pivot by drag, a located formula error,
-undo, a page item), then counts the pixels of its first frame that differ
+undo, a page item, and a third session's accessibility tree: the grid's
+cells and headers, Tab order, a menu row activated, a cell edited from the
+keyboard), then counts the pixels of its first frame that differ
 from docs/reviews/golden/web-1280x713.png by more than 2% (magick compare
 -metric AE -fuzz 2%). Fails above WEB_SHOT_MAX_AE (default 200), leaving
 the screenshots and the diff in target/web-e2e/.

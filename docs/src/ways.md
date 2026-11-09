@@ -322,7 +322,7 @@ server column is its `/v1` API, which [the web GUI](./web-gui.md) drives;
 | what-if (compute, don't save) | through a stored scenario | — | — | `POST /v1/measures/{id}/eval` | `what_if` | — |
 | **Live sync** (see others' writes) | each command reloads | says so on the next key; `R` reloads | offers Reload within 2 s | each request checks the high-water and reloads; `GET /v1/changes` streams them | logical, trigger, commit sync | — |
 | Controlled English | — | accepts it as a formula | shows and accepts it | `/nl/parse`, `/nl/describe` | — | — |
-| Keyboard only, screen readers | yes | yes; works under `NO_COLOR` | yes; every control named for AccessKit | — | — | — |
+| Keyboard only, screen readers | yes | yes; works under `NO_COLOR` | yes; every control named for AccessKit; the web GUI too (an ARIA grid) | — | — | — |
 | **Access policies** (Cedar) | `policy set`, `show`, `check`; a file has no protection of its own | not applied to a file | not applied to a file | enforced on every route, a DuckDB file's included | enforced for every role but the owner's side | — (single-user) |
 
 Every front end that saves refuses to overwrite another writer: the save
