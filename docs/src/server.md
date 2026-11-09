@@ -5,6 +5,7 @@
 ```sh
 improv-server model.db 127.0.0.1:3000   # or IMPROV_ADDR=...; model defaults to improv.db
 improv-server 'postgres://me@127.0.0.1/sales?sslmode=disable&model=plan'
+improv-server 'duckdb:/srv/plans.duckdb?model=plan'   # holds the file while it runs
 improv-server sales.db 0.0.0.0:3443 --tls-cert fullchain.pem --tls-key key.pem   # HTTPS
 ```
 
@@ -148,6 +149,33 @@ allow.
   the server's log says why", since the error may name a hidden measure;
   the server's log has the full text.
 
+## DuckDB-hosted models
+
+A `duckdb:FILE?model=NAME` target is a model in a DuckDB file (see
+[DuckDB-hosted models](./duckdb.md#duckdb-hosted-models)). DuckDB lets one
+program at a time open a file for writing, so the server opens the file
+before it listens and holds it until it exits. While it runs, every other
+program is refused, the CLI and a second server included:
+
+```console
+$ improv set 'duckdb:/srv/plans.duckdb?model=plan' Price 12 --at Product=WidgetA
+error: duckdb error: /srv/plans.duckdb is open in another program
+(/usr/bin/improv-server (PID 4242) by user improv). DuckDB lets one program
+at a time open a file for writing: while improv-server serves this model,
+change it through the server, or stop the server first
+```
+
+So the server is the model's one writer: edits come through `/v1`, the
+model's access policies are enforced on them as for any store, and
+`GET /v1/changes` carries each one to the other clients. Every model in
+the file is reachable only through the server that holds it; serve one
+model per file, or stop the server to work on the others with the CLI.
+
+Before the server starts, and after it stops, the CLI works on the file
+as on any store (`improv init`, the imports, `improv policy set`). A
+server that is killed loses nothing: each edit is one DuckDB transaction,
+committed before the request answers.
+
 ## Writes
 
 A write must name an existing **input** measure and a coordinate with exactly
@@ -155,8 +183,8 @@ one item for each of the measure's categories; values must be finite. Anything
 else is a 400. Writes are serialized, so concurrent writers do not lose
 updates. The server caches the loaded model, and before every request it
 checks the store's high-water mark (one cheap query: Mentat's newest
-transaction, or a Postgres model's `improv.model_version`). When another
-process (the GUI, the CLI, SQL on a Postgres model) has saved since, it
+transaction, or a Postgres or DuckDB model's `improv.model_version`). When
+another process (the GUI, the CLI, SQL on a Postgres model) has saved since, it
 reloads, so the next read shows that change and the next write builds on
 it. A write that races such a save (it lands between the server's load
 and its save) is refused with **409 Conflict**, writing nothing, and the

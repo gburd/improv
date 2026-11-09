@@ -489,6 +489,13 @@ async fn main() {
         std::process::exit(2);
     }
 
+    // A DuckDB file has one writing program: take it before serving, and
+    // keep this handle (so the file's instance and its lock) while serving.
+    let _hold = hold_duckdb(&db_path).unwrap_or_else(|e| {
+        eprintln!("improv-server: {e}");
+        std::process::exit(2);
+    });
+
     let scheduler_enabled =
         scheduler::scheduler_enabled(std::env::var("IMPROV_SCHEDULER").ok().as_deref());
     let tick_secs = std::env::var("IMPROV_SCHEDULER_TICK_SECS")
@@ -551,6 +558,19 @@ async fn main() {
         () = serve(listener, app(state), header_timeout, tls) => {}
         () = stop => eprintln!("improv-server: shutting down"),
     }
+}
+
+/// For a `duckdb:` model, open it and return the handle: while any handle
+/// of this process is open, the file's one DuckDB instance stays open and
+/// holds the file's lock, so no other program writes it (DuckDB allows one
+/// writing program per file). Every request's store handle shares that
+/// instance. A file another program holds is refused, naming it. Other
+/// targets need nothing held: `None`.
+pub fn hold_duckdb(target: &str) -> Result<Option<Store>, String> {
+    if improv_store::duckdb_file(target).is_none() {
+        return Ok(None);
+    }
+    Store::open(target).map(Some).map_err(|e| e.to_string())
 }
 
 /// Resolves on SIGTERM or SIGINT (Ctrl-C; Ctrl-Break on Windows). The
@@ -3182,6 +3202,19 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn duckdb_models_are_held_and_others_are_not() {
+        let path = temp_path("hold.db");
+        assert!(hold_duckdb(path.to_str().unwrap()).unwrap().is_none());
+        let duck = format!("duckdb:{}?model=plan", temp_path("hold.duckdb").display());
+        let held = hold_duckdb(&duck).unwrap();
+        assert!(matches!(held, Some(Store::Duck(_))));
+        let e = hold_duckdb("duckdb:/nonexistent-improv/m.duckdb?model=plan")
+            .err()
+            .unwrap();
+        assert!(e.contains("cannot open"), "{e}");
+    }
+
+    #[test]
     fn model_label_hides_passwords() {
         for (db, want) in [
             ("model.db", "model.db"),
@@ -3192,6 +3225,10 @@ pub(crate) mod tests {
             ),
             ("postgresql://h/d?password=pw", "postgresql://h/d"),
             ("postgres://u:p@w@h", "postgres://u@h"),
+            (
+                "duckdb:/srv/m.duckdb?model=m",
+                "duckdb:/srv/m.duckdb?model=m",
+            ),
         ] {
             assert_eq!(model_label(db), want, "{db}");
         }

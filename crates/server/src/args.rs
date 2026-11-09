@@ -13,7 +13,8 @@ use clap::Parser;
     long_about = "Serve one model over HTTP/1.1 as JSON."
 )]
 pub struct Cli {
-    /// The model: a store file, or postgres://USER@HOST/DB?model=NAME
+    /// The model: a store file, postgres://USER@HOST/DB?model=NAME, or
+    /// duckdb:FILE?model=NAME, which the server holds open while it runs
     #[arg(value_name = "model", default_value = "improv.db")]
     pub model: String,
     /// The address to listen on

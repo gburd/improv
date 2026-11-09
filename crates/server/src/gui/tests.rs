@@ -583,7 +583,17 @@ async fn a_change_stream_outlives_the_request_timeout() {
 #[tokio::test]
 async fn the_change_stream_is_filtered_by_the_stored_cedar_policies() {
     let path = temp_path("cedar-gui.db");
-    let p = path.to_str().unwrap();
+    cedar_filtered_stream(path.to_str().unwrap()).await;
+}
+
+/// The same over a model in a DuckDB file (`duckdb:FILE?model=`).
+#[tokio::test]
+async fn a_duckdb_model_streams_filtered_changes_too() {
+    let path = temp_path("cedar-gui.duckdb");
+    cedar_filtered_stream(&format!("duckdb:{}?model=plan", path.display())).await;
+}
+
+async fn cedar_filtered_stream(p: &str) {
     let mut s = improv_store::Store::open(p).unwrap();
     s.save_model(&revenue_model()).unwrap();
     let who = |n: &str| improv_policy::templates::Who::User(n.into());
@@ -594,6 +604,7 @@ async fn the_change_stream_is_filtered_by_the_stored_cedar_policies() {
     ]
     .join("\n");
     s.save_policies(Some((&text, ""))).unwrap();
+    drop(s);
     let tok = |n: &str, secret: &str| Token {
         name: n.into(),
         scope: Scope::Write,

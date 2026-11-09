@@ -12,8 +12,20 @@ defaults to
 .PP
 A model is a store file made by
 .BR improv (1),
-or a Postgres model URL,
-.BI postgres:// user @ host / db ?model= name\fR.
+a Postgres model URL,
+.BI postgres:// user @ host / db ?model= name\fR,
+or a model in a DuckDB file,
+.BI duckdb: file ?model= name\fR.
+.PP
+DuckDB lets one program at a time open a file for writing. The server opens
+a DuckDB file before it listens and holds it until it exits: while it runs,
+.BR improv (1)
+and any other program are refused, naming the server, and the model is
+changed through the server's routes, under its access policies, with every
+change on
+.IR /v1/changes .
+A file another program holds stops the server before it listens, with
+exit status 2.
 .SH TLS
 With
 .B \-\-tls\-cert

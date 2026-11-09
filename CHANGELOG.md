@@ -18,6 +18,12 @@ this project follows [Semantic Versioning](https://semver.org/).
   refused with the holder's name instead of corrupting it. New crate
   `improv_storage_duckdb`, on the bundled DuckDB 2.0 the workspace already
   links; `improv_store` opens it behind its `duckdb` feature.
+- **improv-server serves DuckDB-hosted models.** `improv-server
+  'duckdb:/srv/plans.duckdb?model=plan'` holds the file from start to exit,
+  as the model's one writer: other programs (the CLI, a second server) are
+  refused, naming the server, while web GUI and other `/v1` clients edit
+  the model live under its access policies, each edit reaching the others
+  on `GET /v1/changes`.
 
 ## [0.14.0] - 2026-11-08
 
