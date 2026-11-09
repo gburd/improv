@@ -51,11 +51,25 @@ stages 1-4 in 0.13).
   was 30x slower with one): a one-cell save scans the model's cells, 14 ms
   at 1M. Not yet: desktop GUIs/TUI on `duckdb:` (use the web GUI), one
   model per server.
-- **NEXT:** stages 5 and 6 (agent `live`, branch `work/live`), COSMIC
-  Windows clipboard and DnD (`work/cwin`). Web accessibility is on main
+- **Stages 5 and 6 (`work/live`, for 0.14/0.15), as built** (the design
+  note's "Stages 5 and 6 as built"): `improv_client::remote` (feature
+  `remote`: ureq on rustls/ring, OS roots or `?sslrootcert=`, `http://`
+  loopback only, no redirects) is the native model service over `/v1`;
+  `improv-gui https://…` runs the web GUI's worksheet app natively
+  (`crates/gui/src/served.rs`, shared with gui_web by `#[path]`), greyed
+  by `/v1/capabilities`; `improv-tui https://…` has its own served grid.
+  Both follow `/v1/changes`. pg_improv 0.15.0 NOTIFYs `improv_<model id>,
+  '<model_version.tx>'` at commit (version moved, or results written);
+  storage_pg's `Listener` / `Store::listen`, and the GUI and TUI listen
+  for Postgres in place of H9 polling.
+- **NEXT:** the COSMIC GUI's remote service (step 4, not started: its
+  window holds a whole Model + Snapshot and sends whole-structure
+  `Restructure`s, which `/v1` has no route for); road-to-1.0 I4 (the full
+  desktop app over the model service). Web accessibility is on main
   (`0a11316`..`1024736`, see the I2 row and
   `docs/reviews/2026-11-08-web-accessibility.md`); left: a run with a
-  real screen reader.
+  real screen reader. The COSMIC Windows blockers are worked around on
+  main (`d216a55`); left: the desktop checklist run by a person.
 - **Rule for every front end:** a client under a read policy never
   computes derived values itself; it reads them, and what-ifs, from the
   authority. Hidden is absent. Versions are opaque. (`improv_client`'s

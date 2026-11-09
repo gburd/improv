@@ -851,6 +851,56 @@ Each stage lands green on its own (fmt, clippy, tests, docs, CHANGELOG).
   unreachable while it runs. A read-only open (DuckDB allows several
   read-only processes, but not beside a writer) is not offered.
 
+### Stages 5 and 6 as built
+
+- **The remote model service.** `improv_client::remote` (feature
+  `remote`; the crate stays wasm-safe without it): requests in order on a
+  thread, the change stream on another (`?since=` resume, backoff 0.25 s
+  to 10 s, a 45 s silence is a dead link), a 401 on either is
+  `Event::LoggedOut`. ureq 3.5.1 (already in the lock through DuckDB's
+  build) on rustls/ring; the OS roots through
+  `rustls-platform-verifier` (no compiled-in bundle), or only the CA in
+  `?sslrootcert=FILE`. `http://` only to loopback, no opt-in; a URL with
+  credentials is refused; redirects are not followed (the token stays
+  with its host); `*_PROXY` is ignored for `http://`. Replies are capped
+  at 128 MiB. `Request::Capabilities` joins the wire.
+- **The desktop GUI** runs the web GUI's worksheet app for a server URL:
+  the file moved to `crates/gui/src/served.rs` and gui_web includes it by
+  `#[path]`, so both GUIs are one implementation of the contract. It
+  holds the visible structure and the cells of the windows on screen,
+  greys out from `/v1/capabilities` (menus, Model Browser buttons,
+  formula lines, cell editing), shows every refusal, and re-reads on a
+  `reload` event. A formula that reads a hidden measure shows the name
+  alone. Not there yet on a server model: the desktop-only panels
+  (graphs, printing, the Inspector, the CSV wizard). Undo is the
+  server's, per session.
+- **The TUI** has its own served grid (`crates/tui/src/served.rs`) on
+  `improv_client::layout`: one measure, pages, pivot, typed edits, undo
+  and redo on the server, a masked token prompt; it polls the service
+  every 100 ms, so changes redraw without a key.
+- **NOTIFY (pg_improv 0.15.0).** `improv_<model id>` (the id: a name is
+  not a safe identifier), payload `model_version.tx`. Sources: a row
+  trigger `version_moved` on `improv.model_version` (ENABLE ALWAYS), the
+  worker's `record` when it wrote rows, and `trigger::recompute` (trigger
+  and commit modes, `recalc`) when it wrote rows. Queued per transaction
+  and sent by `Async_Notify` in the transaction callback at
+  `PRE_COMMIT`, once per model with its last version; a rolled-back
+  savepoint takes its own back, and a prepared transaction sends none
+  (Postgres refuses `PREPARE` after a `NOTIFY`). A worker or recompute
+  notification carries the unchanged version, so an owner GUI cannot
+  tell it from its own save's echo: the desktop clients act on version
+  moves only (H9's meaning, pushed instead of polled), and result
+  readers (psql, dashboards) use the rest.
+- **LISTEN.** `improv_storage_pg::Listener` is a second connection;
+  `PgModelStore::listen` returns it only when the database has the
+  `version_moved` trigger, so a plain catalog or an older pg_improv is
+  polled as before. The GUI's listener thread wakes the frame and
+  replaces the two-second probe; the TUI's sets a wake flag its loop
+  turns into an event, so "another program saved" shows without a key.
+  Both fall back to polling when the listener's connection dies.
+- **Not done.** The COSMIC GUI's remote service; filtered deltas over
+  Postgres (a listener re-reads); per-principal versions (option b).
+
 ### What 0.13 delivers
 
 Proposed: stages 1 to 4. That is Cedar policies stored with Mentat and
