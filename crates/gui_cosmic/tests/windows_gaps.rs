@@ -15,8 +15,9 @@ const ASSESSED: &[(&str, &str, &str)] = &[
     (
         "window_clipboard",
         "f68595ee0e62fbd6589f4709b5aaa5c3c7ea5f6c",
-        "src/platform/windows.rs: write_data/read_data and the DndProvider are \
-         no-ops (release blocker: range copy/paste and drag and drop on Windows)",
+        "src/platform/windows.rs: write_data/read_raw and the DndProvider are \
+         no-ops, so src/win.rs does rich copy/paste and drag and drop on \
+         Windows. If they work now, drop src/win.rs for iced's own",
     ),
     (
         "accesskit_winit",

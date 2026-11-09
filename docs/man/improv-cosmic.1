@@ -34,7 +34,9 @@ The model: a store file, or postgres://USER@HOST/DB?model=NAME. Without it the m
 In the grid: arrows, Tab, PageUp and PageDown, Home and End (Ctrl: the
 first or last cell) move; Shift extends a range; typing, Enter or F2 edits;
 Delete clears. Ctrl+C copies the range (TSV, and an HTML table where the
-clipboard takes formats); Ctrl+V pastes at the cursor; Ctrl+Z undoes,
+clipboard takes formats: Wayland, Windows); Ctrl+V pastes at the cursor.
+On Windows, text or a table dropped from another application pastes at
+the cell under it, and a range dragged out carries both; Ctrl+Z undoes,
 Ctrl+Shift+Z or Ctrl+Y redoes. Escape closes an editor unsaved. In the
 formula editor Tab or Enter takes the first completion.
 .SH ENVIRONMENT

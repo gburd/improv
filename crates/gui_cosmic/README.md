@@ -55,11 +55,14 @@ It builds and starts on Windows (arm64 here; x64 in CI). At this pin:
 - **Accessibility is off on Windows** (known limitation, accepted):
   AccessKit's winit adapter does not build there,
   [pop-os/libcosmic#1152](https://github.com/pop-os/libcosmic/issues/1152).
-- **Release blockers for a Windows release:** copying and pasting ranges
-  as more than plain text (TSV plus HTML), and drag and drop with other
-  applications. libcosmic's Windows clipboard backend (pop-os
-  `window_clipboard`) leaves both unimplemented, and no upstream issue
-  exists yet. We wait for libcosmic; plain-text TSV copy and paste works.
+- **Rich copy and paste, and drag and drop with other applications,** are
+  done here (`src/win.rs`, formats in `src/winfmt.rs`), since libcosmic's
+  Windows clipboard backend (pop-os `window_clipboard`) leaves both
+  unimplemented. The upstream fix is outlined in
+  `docs/reviews/patches/window_clipboard-windows-formats.md`. **Still a
+  release blocker until checked by hand:** a real drag between two
+  applications on an interactive desktop. That file's checklist takes two
+  minutes at the console.
 
 `tests/windows_gaps.rs` fails whenever the pin moves, so each bump
 re-checks these. Details: the review note, "Windows gaps".

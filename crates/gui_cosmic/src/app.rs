@@ -8,7 +8,7 @@ use std::sync::{mpsc, Arc};
 use cosmic::app::{Core, Task};
 use cosmic::iced::keyboard::{self, key::Named, Key, Modifiers};
 use cosmic::iced::widget::canvas;
-use cosmic::iced::{Length, Size, Subscription};
+use cosmic::iced::{Length, Rectangle, Subscription};
 use cosmic::widget;
 use cosmic::{executor, ApplicationExt, Element};
 
@@ -119,6 +119,19 @@ pub enum Message {
     Chosen(bool, Option<String>),
     /// A file was dropped on the window: open it.
     Dropped(std::path::PathBuf),
+    /// Cells were dropped from another application at this point of the
+    /// window (system pixels): paste them at the cell there.
+    #[cfg(windows)]
+    DroppedCells(cosmic::iced::Point, Vec<Vec<String>>),
+    /// A drag of the range out of the window ended: whether it was taken.
+    #[cfg(windows)]
+    DraggedOut(bool),
+    /// A window opened: the main one takes drops from other applications.
+    #[cfg(windows)]
+    Opened(cosmic::iced::window::Id),
+    /// Whether the window's own drop target is in place, or why not.
+    #[cfg(windows)]
+    DropTarget(Result<(), String>),
     /// Edit ▸ Undo (Ctrl+Z) and Redo (Ctrl+Shift+Z, Ctrl+Y).
     Undo,
     Redo,
@@ -174,8 +187,8 @@ pub struct App {
     cursor: Cell,
     /// Where a Shift+move or Shift+click range started.
     anchor: Option<Cell>,
-    /// The grid canvas's size, as it last reported it.
-    size: Size,
+    /// The grid canvas's place in the window, as it last reported it.
+    bounds: Rectangle,
     locale: Locale,
     status: String,
 }
@@ -206,7 +219,7 @@ impl App {
             origin: Cell::default(),
             cursor: Cell::default(),
             anchor: None,
-            size: Size::ZERO,
+            bounds: Rectangle::default(),
             locale: Locale::from_env(),
             status: "Loading…".into(),
         }
@@ -230,7 +243,8 @@ impl App {
         let Some(g) = &self.grid else {
             return Extent::default();
         };
-        let (view_rows, view_cols) = sheet::whole(self.size, g.rows.cats.len(), g.cols.cats.len());
+        let (view_rows, view_cols) =
+            sheet::whole(self.bounds.size(), g.rows.cats.len(), g.cols.cats.len());
         Extent {
             rows: g.rows.len(),
             cols: g.cols.len(),
@@ -274,10 +288,19 @@ impl App {
                     return Task::none();
                 }
                 Key::Character("c") => return self.copy(),
+                #[cfg(windows)]
+                Key::Character("v") => {
+                    // HTML or text: libcosmic's Windows clipboard reads only
+                    // text, so read the Win32 clipboard here.
+                    return Task::done(
+                        Message::Pasted(crate::win::paste().map(crate::clip::Pasted)).into(),
+                    );
+                }
+                #[cfg(not(windows))]
                 Key::Character("v") => {
                     // HTML or text where the clipboard has formats (Wayland);
-                    // else (X11, Windows at the pin: `read_data` is None
-                    // there) the plain text, read as TSV.
+                    // else (X11: `read_data` is None there) the plain text,
+                    // read as TSV.
                     return cosmic::iced::clipboard::read_data::<crate::clip::Pasted>().then(|p| {
                         match p {
                             Some(p) => Task::done(Message::Pasted(Some(p)).into()),
@@ -590,23 +613,69 @@ impl App {
         out
     }
 
-    /// Copy the selection: TSV of the values, and an HTML table with the
-    /// headers. Rich formats reach Wayland only at the libcosmic pin, so the
-    /// TSV goes as plain text too (every platform; see the review note,
-    /// "Windows gaps").
-    pub fn copy(&mut self) -> Task<Message> {
+    /// The selection as TSV of its values and an HTML table with its
+    /// headers (what a copy and a drag carry); `None` when it is empty.
+    fn selection_range(&self) -> Option<crate::clip::Range> {
         let values = self.selection_text(false);
-        if values.is_empty() {
+        (!values.is_empty()).then(|| crate::clip::Range {
+            tsv: crate::clip::to_tsv(&values),
+            html: crate::clip::to_html(&self.selection_text(true), true),
+        })
+    }
+
+    /// Copy the selection: TSV of the values, and an HTML table with the
+    /// headers. Through libcosmic's clipboard, rich formats reach Wayland
+    /// only, so the TSV goes as plain text too (X11). On Windows the window
+    /// writes both formats itself (`win`).
+    pub fn copy(&mut self) -> Task<Message> {
+        let Some(range) = self.selection_range() else {
             return Task::none();
-        }
-        let tsv = crate::clip::to_tsv(&values);
-        let html = crate::clip::to_html(&self.selection_text(true), true);
+        };
         let (a, b) = self.selection();
         self.status = format!("copied {} × {}", b.row - a.row + 1, b.col - a.col + 1);
+        #[cfg(windows)]
+        {
+            if let Err(e) = crate::win::copy(&range.tsv, &range.html) {
+                self.status = format!("not copied: {e}");
+            }
+            Task::none()
+        }
+        #[cfg(not(windows))]
         Task::batch([
-            cosmic::iced::clipboard::write(tsv.clone()),
-            cosmic::iced::clipboard::write_data(crate::clip::Range { tsv, html }),
+            cosmic::iced::clipboard::write(range.tsv.clone()),
+            cosmic::iced::clipboard::write_data(range),
         ])
+    }
+
+    /// Paste cells dropped at `at` (a point of the window, in logical
+    /// pixels): the cell there takes their top-left.
+    #[cfg(windows)]
+    pub fn drop_cells(&mut self, at: cosmic::iced::Point, cells: &[Vec<String>]) {
+        let Some(g) = &self.grid else {
+            return;
+        };
+        let local = cosmic::iced::Point::new(at.x - self.bounds.x, at.y - self.bounds.y);
+        let inside = self.bounds.contains(at);
+        match sheet::cell_at(g, self.origin, local).filter(|_| inside) {
+            Some(c) => {
+                self.cursor = c;
+                self.anchor = None;
+                self.paste(cells);
+            }
+            None => self.status = "drop the cells on a cell of the grid".into(),
+        }
+    }
+
+    /// Drag the selection out to another application, where the platform
+    /// can (Windows); elsewhere nothing happens.
+    fn drag_out(&mut self) -> Task<Message> {
+        #[cfg(windows)]
+        if let Some(r) = self.selection_range() {
+            // Here, on the UI thread: the drag runs on its message loop.
+            let done = crate::win::drag_out(&r.tsv, &r.html);
+            return cosmic::task::future(async move { Message::DraggedOut(done.await) });
+        }
+        Task::none()
     }
 
     /// Paste `cells` with their top-left at the cursor, clipped to the grid:
@@ -860,6 +929,18 @@ impl std::hash::Hash for UpdateRx {
     }
 }
 
+/// What other applications drop on the window (Windows: our OLE drop
+/// target; libcosmic's takes no text or HTML there), as messages. The
+/// subscription runs once for the process, as the target is registered once.
+#[cfg(windows)]
+fn drops() -> impl futures::Stream<Item = Message> {
+    use futures::StreamExt as _;
+    crate::win::drops().map(|d| match d {
+        crate::win::Dropped::Cells(at, cells) => Message::DroppedCells(at, cells),
+        crate::win::Dropped::File(p) => Message::Dropped(p),
+    })
+}
+
 impl cosmic::Application for App {
     type Executor = executor::Default;
     type Flags = Flags;
@@ -887,8 +968,18 @@ impl cosmic::Application for App {
     }
 
     fn subscription(&self) -> Subscription<Message> {
+        // Text and HTML other applications drop (Windows: our OLE target,
+        // registered once the window is open).
+        #[cfg(windows)]
+        let drops = Subscription::batch([
+            Subscription::run(drops),
+            cosmic::iced::window::open_events().map(Message::Opened),
+        ]);
+        #[cfg(not(windows))]
+        let drops = Subscription::none();
         Subscription::batch([
             Subscription::run_with(self.updates.clone(), updates),
+            drops,
             // A button released anywhere ends a tile drag (a strip's own
             // release has dropped it there first).
             cosmic::iced::event::listen_with(|e, _, _| match e {
@@ -1012,6 +1103,31 @@ impl cosmic::Application for App {
                 }
             }
             Message::Dropped(p) => return self.open_store(p.to_string_lossy().into_owned()),
+            #[cfg(windows)]
+            Message::DroppedCells(at, cells) => {
+                // The drop target speaks system pixels; the grid, the app's.
+                let s = self.core.scale_factor();
+                self.drop_cells(cosmic::iced::Point::new(at.x / s, at.y / s), &cells);
+            }
+            #[cfg(windows)]
+            Message::DraggedOut(taken) => {
+                if taken {
+                    let (a, b) = self.selection();
+                    self.status = format!("dragged {} × {}", b.row - a.row + 1, b.col - a.col + 1);
+                }
+            }
+            #[cfg(windows)]
+            Message::Opened(id) => {
+                if self.core.main_window_id() == Some(id) {
+                    return crate::win::take_drops(id).map(|r| Message::DropTarget(r).into());
+                }
+            }
+            #[cfg(windows)]
+            Message::DropTarget(r) => {
+                if let Err(e) = r {
+                    eprintln!("improv-cosmic: drops from other applications are off: {e}");
+                }
+            }
             Message::Undo => self.travel(true),
             Message::Redo => self.travel(false),
             Message::Print => {
@@ -1083,7 +1199,8 @@ impl cosmic::Application for App {
                 self.anchor.get_or_insert(self.cursor);
                 self.cursor = c;
             }
-            Message::Sheet(sheet::Event::Resized(size)) => self.size = size,
+            Message::Sheet(sheet::Event::Placed(bounds)) => self.bounds = bounds,
+            Message::Sheet(sheet::Event::DragOut) => return self.drag_out(),
             Message::Key(key, mods, text) => return self.key(&key, mods, text.as_deref()),
         }
         Task::none()
@@ -1165,8 +1282,9 @@ impl cosmic::Application for App {
                         origin: self.origin,
                         cursor: self.cursor,
                         selection: self.selection(),
-                        size: self.size,
+                        bounds: self.bounds,
                         editing: self.editing.as_ref().map(|(c, _)| *c),
+                        drag_out: cfg!(windows),
                     },
                     on_event: Message::Sheet,
                 })
@@ -1174,21 +1292,23 @@ impl cosmic::Application for App {
                 .height(Length::Fill);
                 match &self.editing {
                     // The editor sits on its cell, while the cell is in view.
-                    Some((at, text)) => match sheet::cell_rect(g, self.origin, *at, self.size) {
-                        Some(r) => cosmic::iced::widget::stack![
-                            grid,
-                            cosmic::iced::widget::pin(
-                                widget::text_input::text_input("", text.as_str())
-                                    .id(EDITOR.clone())
-                                    .on_input(Message::EditText)
-                                    .on_submit(|_| Message::EditCommit)
-                                    .width(Length::Fixed(r.width))
-                            )
-                            .position(r.position())
-                        ]
-                        .into(),
-                        None => grid.into(),
-                    },
+                    Some((at, text)) => {
+                        match sheet::cell_rect(g, self.origin, *at, self.bounds.size()) {
+                            Some(r) => cosmic::iced::widget::stack![
+                                grid,
+                                cosmic::iced::widget::pin(
+                                    widget::text_input::text_input("", text.as_str())
+                                        .id(EDITOR.clone())
+                                        .on_input(Message::EditText)
+                                        .on_submit(|_| Message::EditCommit)
+                                        .width(Length::Fixed(r.width))
+                                )
+                                .position(r.position())
+                            ]
+                            .into(),
+                            None => grid.into(),
+                        }
+                    }
                     None => grid.into(),
                 }
             }
@@ -1472,10 +1592,8 @@ mod tests {
         let (cats_r, cats_c) = app.grid.as_ref().map_or((1, 1), |g| {
             (g.rows.cats.len().max(1), g.cols.cats.len().max(1))
         });
-        app.size = Size::new(
-            sheet::HEAD_W * cats_r as f32 + sheet::COL_W * cols as f32,
-            sheet::ROW_H * cats_c as f32 + sheet::ROW_H * rows as f32,
-        );
+        app.bounds.width = sheet::HEAD_W * cats_r as f32 + sheet::COL_W * cols as f32;
+        app.bounds.height = sheet::ROW_H * cats_c as f32 + sheet::ROW_H * rows as f32;
         app
     }
 
@@ -1573,7 +1691,8 @@ mod tests {
         app.service = service::spawn(Box::new(svc), tx);
         let opened = next(&mut rx);
         app.apply(opened);
-        app.size = Size::new(800.0, 600.0);
+        app.bounds.width = 800.0;
+        app.bounds.height = 600.0;
         (app, rx)
     }
 
@@ -1644,6 +1763,9 @@ mod tests {
 
     #[test]
     fn ctrl_keys_are_not_typed_into_a_cell() {
+        // Ctrl+C copies: on Windows, to the session's clipboard.
+        #[cfg(windows)]
+        let _one = CLIPBOARD.lock();
         let (mut app, _rx) = live(revenue_model());
         let _ = app.key(&Key::Character("c".into()), Modifiers::CTRL, Some("c"));
         assert!(app.editing.is_none());
@@ -1834,6 +1956,9 @@ mod tests {
 
     #[test]
     fn a_copied_range_is_values_and_a_table_with_headers() {
+        // On Windows the copy writes the session's clipboard.
+        #[cfg(windows)]
+        let _one = CLIPBOARD.lock();
         let (mut app, _rx) = live(revenue_model());
         app.show(MeasureId(100));
         let _ = app.key(&Key::Named(Named::ArrowDown), Modifiers::SHIFT, None);
@@ -1874,6 +1999,123 @@ mod tests {
             Some(improv_engine::CellValue::num(100.0)),
             "untouched"
         );
+    }
+
+    /// Windows: Ctrl+C puts the range on the real clipboard as text and as
+    /// "HTML Format", and Ctrl+V reads it back (the HTML) into other cells.
+    /// The clipboard is the session's: tests that touch it run one at a time.
+    #[cfg(windows)]
+    #[test]
+    fn copy_and_paste_go_through_the_windows_clipboard_as_text_and_html() {
+        let _one = CLIPBOARD.lock();
+        let mut m = revenue_model();
+        // A header that is not ASCII: CF_HTML's offsets count its bytes.
+        m.add_item(ItemId(20), CategoryId(2), "Größe – €");
+        let (mut app, mut rx) = live(m);
+        app.show(MeasureId(100));
+        // Quantity's first column, 100 and 120.
+        let _ = app.key(&Key::Named(Named::ArrowDown), Modifiers::SHIFT, None);
+        let _ = app.key(&Key::Character("c".into()), Modifiers::CTRL, Some("c"));
+        assert_eq!(app.status, "copied 2 × 1");
+        // What another application sees: both formats.
+        let text: String = clipboard_win::get_clipboard_string().unwrap();
+        assert_eq!(text, "100\n120");
+        let cf = clipboard_win::formats::Html::new().unwrap();
+        let html: String = clipboard_win::get_clipboard(cf).unwrap();
+        assert!(html.contains("<th>Größe – €</th>"), "{html}");
+        assert!(html.contains("<th>2025</th><td>100</td>"), "{html}");
+        // Pasted at the top of column 2: the HTML's values only, not its
+        // headers.
+        let _ = app.key(&Key::Named(Named::ArrowUp), Modifiers::empty(), None);
+        let _ = app.key(&Key::Named(Named::ArrowRight), Modifiers::empty(), None);
+        assert_eq!(app.cursor, Cell { row: 0, col: 1 });
+        let task = app.key(&Key::Character("v".into()), Modifiers::CTRL, Some("v"));
+        for m in messages(task) {
+            send(&mut app, m);
+        }
+        let u = next(&mut rx);
+        app.apply(u);
+        let g = app.grid.as_ref().unwrap();
+        let at = |r, c| {
+            sheet::value(
+                &app.model,
+                &app.snapshot,
+                MeasureId(100),
+                &g.key(r, c).unwrap(),
+            )
+        };
+        assert_eq!(at(0, 1), Some(improv_engine::CellValue::num(100.0)));
+        assert_eq!(at(1, 1), Some(improv_engine::CellValue::num(120.0)));
+    }
+
+    /// Windows: what another application wrote, text only, pastes as TSV.
+    #[cfg(windows)]
+    #[test]
+    fn plain_text_from_another_application_pastes() {
+        let _one = CLIPBOARD.lock();
+        clipboard_win::set_clipboard_string("7\t8").unwrap();
+        let (mut app, _rx) = live(revenue_model());
+        app.show(MeasureId(100));
+        let task = app.key(&Key::Character("v".into()), Modifiers::CTRL, Some("v"));
+        let got = messages(task);
+        assert!(
+            matches!(&got[..], [Message::Pasted(Some(p))] if p.0 == vec![vec!["7".to_string(), "8".to_string()]]),
+            "{got:?}"
+        );
+    }
+
+    #[cfg(windows)]
+    static CLIPBOARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// The messages a task yields at once (a task that waits yields none).
+    #[cfg(windows)]
+    fn messages(task: Task<Message>) -> Vec<Message> {
+        use futures::StreamExt as _;
+        let Some(stream) = cosmic::iced::runtime::task::into_stream(task) else {
+            return Vec::new();
+        };
+        futures::executor::block_on(stream.collect::<Vec<_>>())
+            .into_iter()
+            .filter_map(|a| match a {
+                cosmic::iced::runtime::Action::Output(cosmic::Action::App(m)) => Some(m),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Windows: cells dropped from another application paste at the cell
+    /// under the drop, as one change; off the grid, nothing. (The drop
+    /// target's side, from OLE to the message: `win`'s tests.)
+    #[cfg(windows)]
+    #[test]
+    fn cells_dropped_on_the_grid_paste_at_the_drop_cell() {
+        let (mut app, mut rx) = live(revenue_model());
+        app.show(MeasureId(100));
+        // The grid sits at (10, 100) in the window.
+        app.bounds.x = 10.0;
+        app.bounds.y = 100.0;
+        // Over the second row, second column: (1, 1).
+        let at = cosmic::iced::Point::new(
+            10.0 + sheet::HEAD_W + sheet::COL_W + 3.0,
+            100.0 + sheet::ROW_H * 2.0 + 3.0,
+        );
+        send(&mut app, Message::DroppedCells(at, vec![vec!["42".into()]]));
+        assert_eq!(app.cursor, Cell { row: 1, col: 1 });
+        assert_eq!(app.pending, 1);
+        let u = next(&mut rx);
+        app.apply(u);
+        let g = app.grid.as_ref().unwrap();
+        let k = g.key(1, 1).unwrap();
+        assert_eq!(
+            sheet::value(&app.model, &app.snapshot, MeasureId(100), &k),
+            Some(improv_engine::CellValue::num(42.0))
+        );
+        // On a header, or outside the grid: refused.
+        app.drop_cells(cosmic::iced::Point::new(12.0, 102.0), &[vec!["1".into()]]);
+        assert_eq!(app.pending, 0);
+        assert!(app.status.contains("on a cell"), "{}", app.status);
+        app.drop_cells(cosmic::iced::Point::new(5.0, 5.0), &[vec!["1".into()]]);
+        assert_eq!(app.pending, 0);
     }
 
     #[test]

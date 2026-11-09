@@ -19,11 +19,14 @@ Three caveats:
 2. **Windows is a second-class COSMIC target.** It builds and starts.
    AccessKit's winit adapter at the libcosmic pin does not compile on
    Windows, so a11y is off there. Rich clipboard formats and drag and drop
-   are no-ops in libcosmic's Windows clipboard backend. a11y is an
-   accepted limitation; the clipboard and DnD gaps are **release blockers
-   for Windows**, waiting on libcosmic (see "Windows gaps"). No window could be shown: ssh runs in
-   session 0, and the interactive scheduled task found nobody logged on,
-   so the drawn window is unverified there.
+   are no-ops in libcosmic's Windows clipboard backend, so improv-cosmic
+   does both itself on Windows (`src/win.rs`, 2026-11-08). a11y is an
+   accepted limitation. The clipboard and DnD gaps stay **release
+   blockers for Windows** until a real drag between two applications is
+   checked by hand on an interactive desktop (see "Windows gaps"). No
+   window could be shown: ssh runs in session 0, and the interactive
+   scheduled task found nobody logged on, so the drawn window is
+   unverified there.
 3. **libcosmic is pre-release.** It is git-only and 1.0.0 in name, with a
    dozen companion git forks (winit, softbuffer, window_clipboard,
    accesskit). Its API moved between the examples and master. Each bump
@@ -140,8 +143,16 @@ Windows release.
 | Gap | Where it lives (at the pin) | Status | Upstream |
 |---|---|---|---|
 | **Accessibility off on Windows.** AccessKit's winit adapter (`accesskit_winit` @ wash2 `6c20249`) fails E0782 (`&Window` where winit 0.31 has a trait), so `a11y` is enabled only on the free Unixes (`Cargo.toml`). | wash2/accesskit `platforms/winit/src/platform_impl/windows.rs:20` | **Known limitation**, accepted. | [pop-os/libcosmic#1152](https://github.com/pop-os/libcosmic/issues/1152) ("Windows build broken in main branch": exactly this error, open since 2026-03-06). Behind it, [AccessKit/accesskit#654](https://github.com/AccessKit/accesskit/issues/654) (winit 0.31 support). |
-| **Range copy/paste of rich formats on Windows.** iced's `clipboard::write_data`/`read_data` (several MIME types at once: TSV plus HTML) reach `window_clipboard`'s Windows provider, which implements only `read`/`write` of one string; the multi-format calls fall back to the trait defaults, which do nothing. Plain-text TSV copy and paste works. | pop-os/window_clipboard `f68595e` (tag `sctk-0.20`), `src/platform/windows.rs` | **Release blocker** for the COSMIC GUI on Windows. We wait for libcosmic; no workaround here. | None found. No issue in pop-os/libcosmic, iced-rs/iced or hecrj/window_clipboard, and pop-os/window_clipboard has issues disabled. To file: a libcosmic issue, "window_clipboard: multi-MIME write_data/read_data unimplemented on Windows". |
-| **Drag and drop on Windows.** The same provider's `DndProvider` is all no-ops (`start_dnd`, `register_dnd_destination`; `peek_offer` returns "DnD not supported"). So libcosmic's `dnd_source`/`dnd_destination` never fire there. Only dropping files on the window (`window::Event::FileDropped`, from winit) works. | same file | **Release blocker**, as above. | None found for Windows. [pop-os/libcosmic#810](https://github.com/pop-os/libcosmic/issues/810) is DnD on non-COSMIC Linux desktops, not Windows. To file with the clipboard one. |
+| **Range copy/paste of rich formats on Windows.** iced's `clipboard::write_data`/`read_data` (several MIME types at once: TSV plus HTML) reach `window_clipboard`'s Windows provider, which implements only `read`/`write` of one string; the multi-format calls fall back to the trait defaults, which do nothing. | pop-os/window_clipboard `f68595e` (tag `sctk-0.20`), `src/platform/windows.rs` | **Worked around in improv-cosmic** (2026-11-08): on Windows, Ctrl+C writes CF_UNICODETEXT (the TSV) and "HTML Format" (CF_HTML) in one clipboard open, through clipboard-win; Ctrl+V prefers the HTML, else the text (`src/win.rs`; the CF_HTML encoder and decoder are pure, `src/winfmt.rs`, with property tests). Verified on santorini (Windows 11 25H2, build 26200, arm64) over ssh: the real Ctrl+C/Ctrl+V path ran in `cargo test`, then another process read the clipboard back. It held formats 13 (CF_UNICODETEXT) and 49316 ("HTML Format"), every header offset pointed where it says (EndHTML = the length before the NUL), a non-ASCII header cell came through as UTF-8 bytes `47 72 c3 b6 c3 9f 65 20 e2 80 93 20 e2 82 ac` ("Größe – €"), and `Get-Clipboard -TextFormatType Html` returned the document. **Release blocker** until the checklist below is run on a desktop. | None found. No issue in pop-os/libcosmic, iced-rs/iced or hecrj/window_clipboard, and pop-os/window_clipboard has issues disabled. A patch outline for the maintainer to file or not: [`patches/window_clipboard-windows-formats.md`](patches/window_clipboard-windows-formats.md). |
+| **Drag and drop on Windows.** The same provider's `DndProvider` is all no-ops (`start_dnd`, `register_dnd_destination`; `peek_offer` returns "DnD not supported"). So libcosmic's `dnd_source`/`dnd_destination` never fire there. Before the workaround, only dropping files on the window worked (`window::Event::FileDropped`, from winit's files-only OLE target); text and HTML from other applications were refused, and nothing could be dragged out. | same file | **Worked around in improv-cosmic** (2026-11-08): the window's OLE drop target is ours (`RegisterDragDrop`; winit's is revoked once the window opens). Text or HTML dropped on a cell pastes there as one change, and a dropped file still opens. A range pressed and dragged starts `DoDragDrop` with an `IDataObject` offering CF_UNICODETEXT and "HTML Format". It starts from a thread timer, so its modal loop runs outside winit's event handler. Verified in-process on santorini: the target's `IDropTarget` methods called with data objects carrying both formats, text alone, a file, and neither; `EnumFormatEtc` and `GetData` for both formats on the offered `IDataObject`; and the registration in a running improv-cosmic. **Not yet hand-verified:** a real drag between two applications on an interactive desktop (`DoDragDrop` cannot finish in session 0). **Release blocker** until then. | None found for Windows. [pop-os/libcosmic#810](https://github.com/pop-os/libcosmic/issues/810) is DnD on non-COSMIC Linux desktops, not Windows. Same patch outline. |
+
+**Closing the blockers.** Someone at santorini's console (or in an RDP
+session) runs the two-minute checklist at the end of
+[`patches/window_clipboard-windows-formats.md`](patches/window_clipboard-windows-formats.md)
+and records the result here. If every step passes, drop "release blocker"
+from these two rows, from `docs/src/cosmic-gui.md`'s Platforms table and
+from the README. When window_clipboard gains these upstream, remove
+`src/win.rs` and go back to iced's clipboard and DnD.
 
 **The tripwire.** `crates/gui_cosmic/tests/windows_gaps.rs` records the
 commit of libcosmic, window_clipboard and accesskit_winit each gap was
@@ -201,9 +212,14 @@ not a silent miscompile. The one Improv-side fix is `e666179`
   value, so one copy can offer `text/plain;charset=utf-8` (TSV) and
   `text/html` (a `<table>`) together; `read_data` asks for the best
   format offered. Caveat from the pinned `window_clipboard`:
-  multi-format data works on **Wayland only**. On X11 and Windows,
-  `write_data` is a no-op, so we also write plain text (TSV), which every
-  spreadsheet accepts. (Stage 7.)
+  multi-format data works on **Wayland only**. On X11, `write_data` is a
+  no-op, so we also write plain text (TSV), which every spreadsheet
+  accepts. On Windows, improv-cosmic skips iced's clipboard and writes
+  CF_UNICODETEXT and "HTML Format" itself, in one open, through
+  clipboard-win (`src/win.rs`). A paste prefers the HTML. The HTML's
+  headers are `<th>` (the column and row labels), and a paste skips them,
+  so a copied range pastes back as its values. (Stage 7; Windows
+  2026-11-08.)
 - **File chooser.** `cosmic::dialog::file_chooser` uses the XDG portal
   (ashpd) on the free Unixes and rfd (native dialogs) on Windows. Both
   return URLs; we open `file://` paths as Mentat stores. (Stage 8.)
@@ -213,12 +229,19 @@ not a silent miscompile. The one Improv-side fix is `e666179`
   (open the PDF with the default handler). (Stage 9.)
 - **Opening URIs.** `ashpd::desktop::open_uri` on Unix (planned: help
   links, a function's documentation); `ShellExecuteW` on Windows.
-- **Drag and drop.** Within the window (pivot tiles), iced's
-  `dnd_source` and `dnd_destination` widgets or plain mouse tracking,
-  which works everywhere. Dropping files onto the window uses
-  `window::Event::FileDropped`. Cross-application drag uses the
-  Wayland data-device; it is unimplemented on Windows in
-  window_clipboard.
+- **Drag and drop.** Within the window (pivot tiles), plain mouse
+  tracking, which works everywhere. Dropping files onto the window uses
+  `window::Event::FileDropped`. Between applications, libcosmic offers
+  `dnd_source`/`dnd_destination` over the Wayland data-device, which
+  improv-cosmic does not use yet, so on Linux a range is not dragged
+  between applications. On Windows, where window_clipboard's DnD is all
+  no-ops, improv-cosmic registers its own OLE drop target (text and HTML
+  paste at the drop cell, a file opens) and drags a range out with
+  `DoDragDrop`. The drag starts from a thread timer, not in the event
+  handler: inside winit's handler, the modal loop's messages would
+  re-enter winit's runner, which panics. The canvas starts it when the
+  press is inside a range of more than one cell and the pointer moves
+  4 px; a press elsewhere selects as before.
 - **Desktop entry and icon.** `me.burd.Improv` is the `APP_ID`, which
   COSMIC uses as the Wayland app id. Planned: a
   `res/me.burd.Improv.desktop` and a scalable icon installed under
@@ -339,8 +362,10 @@ yet".
 - **illumos depends on Solnix's fixup scripts.** They live in its Nix
   store, not upstream. For an illumos package, build the way Solnix
   builds its COSMIC apps (vendor, fixups, no wgpu).
-- **Windows** lacks a11y and rich clipboard, and its window is not yet
-  seen on real hardware. Run it once in an RDP or console session on
-  santorini before claiming Windows support.
+- **Windows** lacks a11y, and its window is not yet seen on real
+  hardware. Rich copy and paste and drag and drop are improv-cosmic's own
+  COM code there (`src/win.rs`), tested in-process only. Run the checklist
+  in an RDP or console session on santorini before claiming Windows
+  support.
 - **Binary size.** Debug builds are about 1.2 GB on every host, release
   65 MB. Fine for a desktop app, heavy for CI caches.

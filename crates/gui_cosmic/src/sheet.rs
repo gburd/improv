@@ -3,6 +3,8 @@
 //! stay pinned; the wheel and the scroll keys move a viewport over the
 //! [`pivot::Grid`]; a click selects a cell. Colors come from the COSMIC
 //! theme: its background, dividers, text, and the accent for the selection.
+//! Where the window can drag a range to other applications (Windows), a
+//! press inside the range and a move start that drag.
 
 use cosmic::iced::mouse::{self, ScrollDelta};
 use cosmic::iced::widget::canvas::{self, Frame, Geometry, Path, Stroke, Text};
@@ -22,6 +24,9 @@ pub const COL_W: f32 = 112.0;
 pub const HEAD_W: f32 = 120.0;
 const PAD: f32 = 8.0;
 const TEXT: f32 = 14.0;
+/// How far a press inside the range moves before it drags the range out
+/// (Windows' default drag threshold, `SM_CXDRAG`).
+pub const DRAG_SLOP: f32 = 4.0;
 
 /// A cell position in the grid.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -41,8 +46,12 @@ pub enum Event {
     Activated(Cell),
     /// Shift+click: extend the selection to this cell.
     Extended(Cell),
-    /// The canvas has this size now (the view's extent follows it).
-    Resized(Size),
+    /// The canvas is at these bounds in the window now: the view's extent
+    /// follows its size, and a drop from another application finds its cell
+    /// by position.
+    Placed(Rectangle),
+    /// The range was pressed and dragged: drag it out of the window.
+    DragOut,
 }
 
 /// The values a measure shows: its input cells (from the model) or its
@@ -87,6 +96,21 @@ pub fn cell_rect(grid: &Grid, origin: Cell, at: Cell, size: Size) -> Option<Rect
     })
 }
 
+/// The data cell drawn under `p` (relative to the canvas) when `origin` is
+/// the view's top-left, if any.
+pub fn cell_at(grid: &Grid, origin: Cell, p: Point) -> Option<Cell> {
+    let hw = HEAD_W * grid.rows.cats.len().max(1) as f32;
+    let hh = ROW_H * grid.cols.cats.len().max(1) as f32;
+    if p.x < hw || p.y < hh {
+        return None;
+    }
+    let cell = Cell {
+        row: origin.row + ((p.y - hh) / ROW_H) as usize,
+        col: origin.col + ((p.x - hw) / COL_W) as usize,
+    };
+    (cell.row < grid.rows.len() && cell.col < grid.cols.len()).then_some(cell)
+}
+
 /// How many whole data rows and columns fit (the page size for the keys;
 /// at least one each).
 pub fn whole(size: Size, row_cats: usize, col_cats: usize) -> (usize, usize) {
@@ -110,18 +134,23 @@ pub struct Sheet<'a> {
     pub cursor: Cell,
     /// The selected range, inclusive (the cursor alone when no anchor).
     pub selection: (Cell, Cell),
-    /// The size the window last heard of; a different one is reported.
-    pub size: Size,
+    /// Where the window last heard the canvas is; a change is reported.
+    pub bounds: Rectangle,
     /// A cell under an open editor: its value is not drawn.
     pub editing: Option<Cell>,
+    /// A press inside a range and a move drag the range out
+    /// ([`Event::DragOut`]); without it a press there selects the cell.
+    pub drag_out: bool,
 }
 
-/// The canvas's own state: the last click (to tell a double click) and
-/// whether Shift is held.
+/// The canvas's own state: the last click (to tell a double click),
+/// whether Shift is held, and a press inside the range that may become a
+/// drag (where, relative to the canvas, and on which cell).
 #[derive(Default)]
 pub struct State {
     last_click: Option<(std::time::Instant, Cell)>,
     shift: bool,
+    press: Option<(Point, Cell)>,
 }
 
 impl Sheet<'_> {
@@ -134,15 +163,7 @@ impl Sheet<'_> {
 
     /// The data cell under `p` (relative to the canvas), if any.
     fn cell_at(&self, p: Point) -> Option<Cell> {
-        let (hw, hh) = self.head();
-        if p.x < hw || p.y < hh {
-            return None;
-        }
-        let cell = Cell {
-            row: self.origin.row + ((p.y - hh) / ROW_H) as usize,
-            col: self.origin.col + ((p.x - hw) / COL_W) as usize,
-        };
-        (cell.row < self.grid.rows.len() && cell.col < self.grid.cols.len()).then_some(cell)
+        cell_at(self.grid, self.origin, p)
     }
 
     /// The origin after scrolling by `rows` and `cols` (clamped).
@@ -172,13 +193,36 @@ impl<Message: Clone> canvas::Program<Message, Theme> for SheetProgram<'_, Messag
         cursor: mouse::Cursor,
     ) -> Option<canvas::Action<Message>> {
         let sheet = &self.sheet;
-        if bounds.size() != sheet.size {
-            let e = Event::Resized(bounds.size());
+        if bounds != sheet.bounds {
+            let e = Event::Placed(bounds);
             return Some(canvas::Action::publish((self.on_event)(e)));
         }
         if let canvas::Event::Keyboard(cosmic::iced::keyboard::Event::ModifiersChanged(m)) = event {
             state.shift = m.shift();
             return None;
+        }
+        // A press inside the range waits: a move drags the range out (also
+        // past the canvas's edge), a release is the click it would have been.
+        if let Some((at, cell)) = state.press {
+            match event {
+                canvas::Event::Mouse(mouse::Event::CursorMoved { .. }) => {
+                    let moved = cursor
+                        .position_from(bounds.position())
+                        .is_some_and(|p| p.distance(at) >= DRAG_SLOP);
+                    if !moved {
+                        return None;
+                    }
+                    state.press = None;
+                    let e = (self.on_event)(Event::DragOut);
+                    return Some(canvas::Action::publish(e).and_capture());
+                }
+                canvas::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
+                    state.press = None;
+                    let e = (self.on_event)(Event::Clicked(cell));
+                    return Some(canvas::Action::publish(e).and_capture());
+                }
+                _ => {}
+            }
         }
         let p = cursor.position_in(bounds)?;
         match event {
@@ -197,10 +241,14 @@ impl<Message: Clone> canvas::Program<Message, Theme> for SheetProgram<'_, Messag
                     c == cell && now.duration_since(t) < std::time::Duration::from_millis(400)
                 });
                 state.last_click = Some((now, cell));
+                let (a, b) = sheet.selection;
                 let e = if state.shift {
                     Event::Extended(cell)
                 } else if double {
                     Event::Activated(cell)
+                } else if sheet.drag_out && a != b && crate::nav::contains((a, b), cell) {
+                    state.press = Some((p, cell));
+                    return Some(canvas::Action::capture());
                 } else {
                     Event::Clicked(cell)
                 };
@@ -398,8 +446,9 @@ mod tests {
             origin: Cell::default(),
             cursor: Cell::default(),
             selection: Default::default(),
-            size: Size::ZERO,
+            bounds: Rectangle::default(),
             editing: None,
+            drag_out: false,
         };
         let end = s.scrolled(isize::MAX, 0);
         assert_eq!(end.row, 999_999);
@@ -472,6 +521,122 @@ mod tests {
         assert_eq!(value(&m, &Snapshot::default(), MeasureId(102), &k), None);
     }
 
+    /// What the canvas says to `event` (`None`: nothing), at `at` in a
+    /// canvas placed at (10, 20).
+    fn says(
+        program: &SheetProgram<'_, Event>,
+        state: &mut State,
+        event: mouse::Event,
+        at: Point,
+    ) -> Option<Event> {
+        let bounds = program.sheet.bounds;
+        let cursor = mouse::Cursor::Available(Point::new(at.x + bounds.x, at.y + bounds.y));
+        let action =
+            canvas::Program::update(program, state, &canvas::Event::Mouse(event), bounds, cursor)?;
+        action.into_inner().0
+    }
+
+    #[test]
+    fn a_press_in_the_range_and_a_move_drag_it_out_and_a_release_clicks() {
+        let m = revenue_model();
+        let l = Layout::natural(&m, MeasureId(100)).unwrap();
+        let g = Grid::new(&m, &l);
+        let snap = Snapshot::default();
+        let locale = improv_core_model::Locale::en();
+        // The first row's two cells; the second row is outside.
+        let range = (Cell::default(), Cell { row: 0, col: 1 });
+        let program = |drag_out| SheetProgram {
+            sheet: Sheet {
+                model: &m,
+                snapshot: &snap,
+                measure: MeasureId(100),
+                grid: &g,
+                format: None,
+                locale: &locale,
+                origin: Cell::default(),
+                cursor: Cell::default(),
+                selection: range,
+                bounds: Rectangle::new(Point::new(10.0, 20.0), Size::new(600.0, 400.0)),
+                editing: None,
+                drag_out,
+            },
+            on_event: |e| e,
+        };
+        let (on, off) = (program(true), program(false));
+        let press = mouse::Event::ButtonPressed(mouse::Button::Left);
+        let release = mouse::Event::ButtonReleased(mouse::Button::Left);
+        let to = |p: Point| mouse::Event::CursorMoved { position: p };
+        let in_range = Point::new(HEAD_W + COL_W + 5.0, ROW_H + 5.0);
+        let cell = Cell { row: 0, col: 1 };
+        // Pressed in the range: it waits; a small move is no drag yet.
+        let mut st = State::default();
+        assert!(says(&on, &mut st, press, in_range).is_none());
+        let near = Point::new(in_range.x + 2.0, in_range.y + 2.0);
+        assert!(says(&on, &mut st, to(near), near).is_none());
+        // A move of the slop drags it out, past the canvas's edge too.
+        let far = Point::new(-50.0, in_range.y);
+        assert!(matches!(
+            says(&on, &mut st, to(far), far),
+            Some(Event::DragOut)
+        ));
+        assert!(
+            says(&on, &mut st, release, far).is_none(),
+            "the drag owns it"
+        );
+        // Pressed and released in place: a click on that cell.
+        let mut st = State::default();
+        assert!(says(&on, &mut st, press, in_range).is_none());
+        assert!(
+            matches!(says(&on, &mut st, release, in_range), Some(Event::Clicked(c)) if c == cell)
+        );
+        // Outside the range, or without drag-out: a click at once.
+        let mut st = State::default();
+        let outside = Point::new(HEAD_W + 5.0, ROW_H * 2.0 + 5.0);
+        let below = Cell { row: 1, col: 0 };
+        assert!(
+            matches!(says(&on, &mut st, press, outside), Some(Event::Clicked(c)) if c == below)
+        );
+        let mut st = State::default();
+        assert!(
+            matches!(says(&off, &mut st, press, in_range), Some(Event::Clicked(c)) if c == cell)
+        );
+    }
+
+    #[test]
+    fn a_move_is_reported_as_well_as_a_resize() {
+        let m = revenue_model();
+        let l = Layout::natural(&m, MeasureId(100)).unwrap();
+        let g = Grid::new(&m, &l);
+        let snap = Snapshot::default();
+        let locale = improv_core_model::Locale::en();
+        let program = SheetProgram {
+            sheet: Sheet {
+                model: &m,
+                snapshot: &snap,
+                measure: MeasureId(100),
+                grid: &g,
+                format: None,
+                locale: &locale,
+                origin: Cell::default(),
+                cursor: Cell::default(),
+                selection: Default::default(),
+                bounds: Rectangle::new(Point::new(10.0, 20.0), Size::new(600.0, 400.0)),
+                editing: None,
+                drag_out: false,
+            },
+            on_event: |e| e,
+        };
+        let moved = Rectangle::new(Point::new(10.0, 60.0), Size::new(600.0, 400.0));
+        let a = canvas::Program::update(
+            &program,
+            &mut State::default(),
+            &canvas::Event::Mouse(mouse::Event::CursorLeft),
+            moved,
+            mouse::Cursor::Unavailable,
+        );
+        assert!(matches!(a.and_then(|a| a.into_inner().0), Some(Event::Placed(b)) if b == moved));
+    }
+
     #[test]
     fn hit_testing_skips_headers_and_honors_the_origin() {
         let m = revenue_model();
@@ -489,8 +654,9 @@ mod tests {
             origin: Cell { row: 1, col: 0 },
             cursor: Cell::default(),
             selection: Default::default(),
-            size: Size::ZERO,
+            bounds: Rectangle::default(),
             editing: None,
+            drag_out: false,
         };
         assert_eq!(s.cell_at(Point::new(5.0, 5.0)), None);
         let p = Point::new(HEAD_W + COL_W + 1.0, ROW_H + 1.0);

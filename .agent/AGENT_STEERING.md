@@ -162,8 +162,11 @@ criteria" are the bar. Mark tasks done there as they land.
   undo); guide `docs/src/cosmic-gui.md`, `improv-cosmic(1)`, CI jobs
   `gui-cosmic` and `cosmic-shot`. Runs on Linux, FreeBSD (Xvfb) and Solnix
   (its COSMIC session); Windows builds and tests (window unseen: nobody
-  logged on at santorini). Windows release blockers (rich copy, DnD) wait
-  on libcosmic; `tests/windows_gaps.rs` re-checks them at each pin move.
+  logged on at santorini). Windows release blockers (rich copy, DnD) are
+  worked around in `crates/gui_cosmic/src/win.rs` (0.15, tested
+  in-process on santorini); they close when a person runs the desktop
+  checklist in `docs/reviews/patches/window_clipboard-windows-formats.md`.
+  `tests/windows_gaps.rs` re-checks the pins at each move.
   Left: the review note's "Parity reached" and the guide's "Not yet".
 
 - **Done since the last status:** H7/H8 (TUI and GUI build models from

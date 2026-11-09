@@ -76,10 +76,15 @@ with no GPU backend. Without an argument the model is in memory only.
 ![The same measure as a chart](./img/cosmic-gui-chart.png)
 
 - **Copy and paste.** Ctrl+C copies the range as tab-separated values and,
-  where the clipboard takes several formats (Wayland), as an HTML table with
-  its headers too, so spreadsheets and editors paste it as a table. Ctrl+V
-  pastes a range from either at the cursor, as one change (from HTML, the
-  values without the headers).
+  where the clipboard takes several formats (Wayland and Windows), as an
+  HTML table with its headers too, so spreadsheets and editors paste it as
+  a table. Ctrl+V pastes a range from either at the cursor, as one change
+  (from HTML, the values without the headers).
+- **Drag and drop with other applications** (Windows). Text or a table
+  dragged from another application onto a cell pastes there. A range
+  dragged out (press inside the selection and drag) carries the same text
+  and HTML table as a copy. On Linux, dragging between applications is not
+  wired up yet.
 - **Open, Save As and Print.** Through the desktop's file chooser and print
   dialog (the XDG portals); on Windows, the native file dialogs, and Print
   opens the PDF in the default viewer. A model file dropped on the window
@@ -98,7 +103,7 @@ engine.
 | Linux (Wayland, X11) | Builds and runs. |
 | FreeBSD | Builds and runs (X11). |
 | illumos (Solnix) | Builds with Solnix's own COSMIC fixups (`crates/gui_cosmic/ci/solnix-build.sh`); runs in a Solnix COSMIC session with `ICED_BACKEND=tiny-skia`. |
-| Windows 11 (x64, arm64) | Builds and starts. **Known limitation:** no accessibility on Windows yet. **Release blockers** for a Windows release, waiting on libcosmic: copying ranges as more than plain text, and drag and drop with other applications. |
+| Windows 11 (x64, arm64) | Builds and starts. Copies and pastes ranges as text and HTML, and drags and drops text and tables with other applications. improv-cosmic does these itself, since libcosmic's Windows clipboard does not. **Known limitation:** no accessibility on Windows yet. **Release blockers until hand-checked:** a real drag between two applications on an interactive desktop has not been checked by hand yet (only in-process tests ran, over ssh). The checklist is in `docs/reviews/patches/window_clipboard-windows-formats.md`. |
 
 ## Not yet
 

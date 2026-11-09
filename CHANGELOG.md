@@ -37,6 +37,19 @@ this project follows [Semantic Versioning](https://semver.org/).
   formula error an alert. Not yet tried with a real screen reader (the
   checks read Chromium's accessibility tree), and a field's text cannot
   be read back while typing. See the web GUI guide, "Accessibility".
+- **improv-cosmic on Windows: rich copy and paste, and drag and drop with
+  other applications.** libcosmic's Windows clipboard keeps one string and
+  does no drag and drop, so improv-cosmic does these itself on Windows. Ctrl+C
+  writes the range as text (tab-separated) and as an HTML table
+  ("HTML Format") together, so Word and Excel paste a table. Ctrl+V reads
+  the HTML when the clipboard has it, else the text. Text or a table dragged
+  from another application onto a cell pastes there as one change; a
+  dropped model file still opens. A range dragged out (press inside the
+  selection and drag) carries the same text and table. Tested in-process
+  on Windows 11 arm64. Not yet checked by hand: a real drag between two
+  applications on an interactive desktop. Until that checklist is run
+  (`docs/reviews/patches/window_clipboard-windows-formats.md`), these stay
+  Windows release blockers.
 
 ### Changed
 

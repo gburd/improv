@@ -13,6 +13,11 @@ mod print;
 mod service;
 mod sheet;
 mod shot;
+#[cfg(windows)]
+mod win;
+// Used on Windows; pure, so its tests run everywhere.
+#[cfg(any(windows, test))]
+mod winfmt;
 
 use clap::Parser;
 
