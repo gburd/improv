@@ -2463,6 +2463,86 @@ mod tests {
         std::fs::remove_file(path).ok();
     }
 
+    /// The grid's keyboard cursor, on the desktop too (the web GUI's code):
+    /// Tab reaches a grid's cursor cell, the arrows move it, Enter edits
+    /// the cell, Enter commits and the cell has the keyboard again; and
+    /// each cell is a named grid cell in egui's AccessKit tree.
+    #[test]
+    fn the_keyboard_cursor_moves_edits_and_names_cells() {
+        let (ctx, mut app, path) = open("root");
+        ctx.enable_accesskit();
+        settle(&ctx, &mut app);
+        // Quantity's window is the key one; its first cell, by the pointer.
+        let q = app
+            .wins
+            .iter()
+            .find(|w| w.sheet.measure == 101)
+            .unwrap()
+            .uid;
+        app.key = Some(q);
+        let first = (app.probe.cells.iter())
+            .find(|c| c["measure"] == "Quantity" && c["text"] == "100")
+            .cloned()
+            .unwrap();
+        click(&ctx, &mut app, at(&first), 1, egui::PointerButton::Primary);
+        let cursor = |app: &App| app.wins.iter().find(|w| w.uid == q).unwrap().cursor;
+        assert_eq!(cursor(&app), (0, 0));
+        // The cell takes the keyboard, as after an edit (`refocus`): the
+        // cursor cell is the grid's one Tab stop.
+        app.wins.iter_mut().find(|w| w.uid == q).unwrap().refocus = true;
+        settle(&ctx, &mut app);
+        assert!(
+            ctx.memory(|m| m.focused()).is_some(),
+            "a cell has the keyboard"
+        );
+        // Down then Right: (1, 1). Home and Ctrl+End too.
+        for k in [egui::Key::ArrowDown, egui::Key::ArrowRight] {
+            frame(&ctx, &mut app, vec![key(k)]);
+            settle(&ctx, &mut app);
+        }
+        assert_eq!(cursor(&app), (1, 1));
+        frame(&ctx, &mut app, vec![key(egui::Key::Home)]);
+        settle(&ctx, &mut app);
+        assert_eq!(cursor(&app), (1, 0));
+        // Enter edits it, typing replaces, Enter commits; the cell has the
+        // keyboard back.
+        frame(&ctx, &mut app, vec![key(egui::Key::Enter)]);
+        settle(&ctx, &mut app);
+        assert!(app.wins.iter().any(|w| w.editing.is_some()), "editing");
+        frame(&ctx, &mut app, vec![egui::Event::Text("7".into())]);
+        frame(&ctx, &mut app, vec![key(egui::Key::Enter)]);
+        settle(&ctx, &mut app);
+        assert!(app.wins.iter().all(|w| w.editing.is_none()));
+        assert_eq!(app.status, "1 cell set");
+        // AccessKit: the grid's cells are named by their headers.
+        let out = ctx.test_ui(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, vec2(1280.0, 800.0))),
+                ..Default::default()
+            },
+            |ui| app.frame(ui),
+        );
+        let update = out
+            .platform_output
+            .accesskit_update
+            .expect("an AccessKit tree");
+        let named: Vec<String> = (update.nodes.iter())
+            .filter(|(_, n)| n.role() == egui::accesskit::Role::GridCell)
+            .filter_map(|(_, n)| n.label().map(str::to_owned))
+            .collect();
+        assert!(
+            named
+                .iter()
+                .any(|l| l.ends_with(": 100") && l.contains("WidgetA")),
+            "{named:?}"
+        );
+        assert!(
+            (update.nodes.iter()).any(|(_, n)| n.role() == egui::accesskit::Role::Grid),
+            "a grid node"
+        );
+        std::fs::remove_file(path).ok();
+    }
+
     /// A policy change that closes the model to the user: on the next
     /// re-read nothing of it stays on screen, and the refusal is said.
     #[test]
