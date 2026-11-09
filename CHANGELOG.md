@@ -8,6 +8,11 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Docs: a movie of the web GUI.** `docs/demo/web-movie.sh` records two
+  browsers on one improv-server (a login, a pivot, an edit one browser
+  sends and the other shows with the server's new Revenue, a refused
+  formula, an undo, the Model Browser); the README shows it beside the
+  desktop, COSMIC and terminal movies, and the web GUI chapter plays it.
 - **DuckDB-hosted models.** A model can live in a DuckDB file:
   `improv init 'duckdb:/srv/plans.duckdb?model=plan'`, then every `improv`
   command, `improv policy` included, works on that target. The file holds

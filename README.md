@@ -68,6 +68,14 @@ application on the same models, in the desktop's theme.
 
 ![improv-cosmic: pivoting the Region tile, Swap, editing a Quantity cell and Revenue following, a formula with completions and a located error, and the chart](docs/src/img/cosmic-demo.gif)
 
+### The web GUI
+
+`improv-server --static` serves the same NeXT-style worksheets to a
+browser, under the model's access policies, with every edit reaching the
+other browsers live.
+
+![The web GUI: a token login, pivoting the Time tile and back, an edit in one browser reaching another with the server's new Revenue, a formula refused with its error located, undo and the Model Browser](docs/src/img/web-demo.gif)
+
 ### The terminal UI
 
 ![The TUI: editing an input as 1,500 and watching Revenue recompute, a number format, paging, pivoting, a range Sum, a saved view the TUI reopens on](docs/src/img/tui-demo.gif)

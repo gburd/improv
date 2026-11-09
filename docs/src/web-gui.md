@@ -13,6 +13,17 @@ see (see [Access](#access)).
 *Three worksheets in the browser after logging in; the status bar says
 `live` while the change stream is up.*
 
+<video src="./img/web-demo.mp4" controls muted loop playsinline width="100%"
+  poster="./img/web-demo.png">
+  <img src="./img/web-demo.gif" alt="The web GUI: a token login, pivoting the Time tile and back, an edit in one browser reaching another with the server's new Revenue, a formula refused with its error located, undo and the Model Browser">
+</video>
+
+*Two browsers on one improv-server: a token login, a pivot and back, an
+edit in one browser that the other shows at once with the server's new
+Revenue, a misspelled formula refused with the error located, an undo,
+and the Model Browser. A caption under the picture says what each step
+does.*
+
 ## Serve it
 
 Build it once (it needs the `wasm32-unknown-unknown` Rust target and

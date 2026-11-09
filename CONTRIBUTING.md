@@ -186,7 +186,9 @@ branch (it needs a `PAGES_PUSH_TOKEN` secret).
    release builds of `improv_cli` and `crates/gui_cosmic` (`IMPROV_BIN=`,
    `IMPROV_COSMIC=`; see `docs/demo/README.md`). Run it with
    `COSMIC_MOVIE_SHOTS=1`, check each beat's still, then commit
-   `docs/src/img/cosmic-demo.{mp4,gif,png}` with the release.
+   `docs/src/img/cosmic-demo.{mp4,gif,png}` with the release. When the web
+   GUI changed, re-record its movie the same way (`docs/demo/web-movie.sh`,
+   `web-demo.*`).
 3. Push to `main`, wait for CI, then push a signed annotated tag `vX.Y.Z`.
    Before tagging, dry-run the release on the GitHub mirror:
    `gh workflow run release.yml -R gburd/improv --ref main` builds and
