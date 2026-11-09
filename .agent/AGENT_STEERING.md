@@ -40,6 +40,12 @@ stages 1-4 in 0.13).
   loopback without TLS need `IMPROV_ALLOW_PLAIN=1` (the image does not set
   it). Live TLS tests on `IMPROV_TEST_PG_TLS` (CI coverage job: PG 17 with
   ssl=on). As built: the design note's "Stage 4 as built".
+- **Stage 7 DONE** (`work/duck`, for 0.15): `crates/storage_duckdb`
+  (`duckdb:FILE?model=NAME`, an `improv.*` catalog in the DuckDB file,
+  one DuckDB instance per file per process, a second process refused by
+  name), `improv_store`'s `duckdb` feature (CLI and server), and
+  improv-server holding the file as its one writer (`hold_duckdb`).
+  As built: the design note's "Stage 7 as built".
 - **NEXT:** stage 5, filtered clients.
 - **Rule for every front end:** a client under a read policy never
   computes derived values itself; it reads them, and what-ifs, from the

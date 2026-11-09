@@ -388,6 +388,10 @@ deletes the cells of dropped measures. `save_model` rewrites every cell of
 the measures the handle loaded: all of them after `load_model`, the
 closure after `load_partial`. `save_policies` moves both the policies'
 version and `tx` on, so the server's change feed tells clients to reload.
+On a 1M-cell model (release build, x86_64 Linux): `improv import-csv` of
+the million rows takes 2.2 s and makes a 12 MB file, a load 1.1 s, one
+cell's `save_changes` 14 ms, a structural one 20 ms, and `save_model`
+1.1 s.
 
 **One writer.** DuckDB lets one process open a file for writing, and two
 DuckDB instances on one file inside a process would corrupt it. So the

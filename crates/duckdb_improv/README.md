@@ -21,6 +21,12 @@ SELECT * FROM improv('sales', '
 
 The user guide is `docs/src/duckdb.md` (*Using Improv → DuckDB*).
 
+The extension is stateless and single-user: it stores nothing and applies
+no access policies (it reads what the DuckDB connection reads). A model
+kept in a DuckDB file and edited live under Cedar policies is a different
+thing: `crates/storage_duckdb`, served by `improv-server` on a
+`duckdb:FILE?model=NAME` target (the guide's "DuckDB-hosted models").
+
 ## SQL API
 
 | Function | Returns | |

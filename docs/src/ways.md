@@ -11,12 +11,13 @@ job, and switch when the job changes.
 | the same in a browser, several people at once | [the web GUI](#the-web-gui) | behind `improv-server` |
 | the same as a native COSMIC application (a preview) | [the COSMIC GUI](#the-cosmic-gui-improv-cosmic) | a store file, or Postgres |
 | do the same over SSH or in a terminal | [the TUI](#the-terminal-ui-improv-tui) | a store file, or Postgres |
-| script a model, build it in CI, diff it, load data in bulk | [the CLI](#the-cli-improv) | a store file, or Postgres |
+| script a model, build it in CI, diff it, load data in bulk | [the CLI](#the-cli-improv) | a store file, Postgres, or a DuckDB file |
 | push a live feed through a model and get the changed results out | [streaming](#streaming-improv-stream) | a store file, or Postgres |
 | model data that already lives in Postgres, and read results with SQL | [pg_improv](#in-postgres-pg_improv) | Postgres tables plus the `improv` catalog |
 | write a SQL function as a formula | [`LANGUAGE improv`](#sql-functions-language-improv) | the function body |
 | run a formula or a model over data in DuckDB, from SQL | [the DuckDB extension](#in-duckdb-the-improv-extension) | nowhere: computed per query |
-| serve a model to other programs over HTTP | [the server](#the-http-server-improv-server) | a store file, or Postgres |
+| serve a model to other programs over HTTP | [the server](#the-http-server-improv-server) | a store file, Postgres, or a DuckDB file |
+| keep a model in a DuckDB file, edited live by several people | [the server](#the-http-server-improv-server) over a [DuckDB-hosted model](./duckdb.md#duckdb-hosted-models) | a DuckDB file the server holds |
 
 [What each front end can do](#what-each-front-end-can-do) compares them feature by feature.
 
@@ -34,6 +35,17 @@ postgres://user@host/database?model=plan
 Pass that URL to the CLI, TUI, GUI or server. With `pg_improv` installed,
 the GUI's edits to a bound measure update your table's rows. See
 [Improv in Postgres](./postgres.md).
+
+A **DuckDB-hosted model** lives in a DuckDB file, named the same way:
+
+```text
+duckdb:/srv/plans.duckdb?model=plan
+```
+
+The CLI and the server take it. DuckDB lets one program write a file at a
+time, so while `improv-server` serves the file it is the only writer, and
+everyone edits through it (the web GUI, `/v1`). See
+[DuckDB-hosted models](./duckdb.md#duckdb-hosted-models).
 
 Two writers never silently overwrite each other. If someone else saved after
 you loaded, your save is refused with a conflict; choose **File ▸ Revert to
@@ -286,6 +298,7 @@ server column is its `/v1` API, which [the web GUI](./web-gui.md) drives;
 | | CLI | TUI | GUI | server | pg_improv | DuckDB |
 | --- | --- | --- | --- | --- | --- | --- |
 | **Open a model** (file or `postgres://`) | yes | from the command line | File ▸ Open…, or the command line | one per process | its own catalog | — (computed per query) |
+| Open a DuckDB-hosted model (`duckdb:`) | yes, while no server holds the file | — | — | yes, as its one writer | — | — (the extension keeps no model) |
 | **Create a model** | `init` | open a new file | File ▸ New | — | `create_model` | inline `improv(source, model)` |
 | Add categories and items | `add-category`, `add-item` | `c` | Edit ▸ Add Category / Add Item, or type in a tile | `POST /v1/categories`, `/v1/categories/{id}/items` | `bind_category` (items from the column) | `category` lines |
 | Add an input measure | `add-measure` | `n` | Edit ▸ Add Input Measure | `POST /v1/measures` | `bind_measure` | `input` lines |
@@ -310,7 +323,7 @@ server column is its `/v1` API, which [the web GUI](./web-gui.md) drives;
 | **Live sync** (see others' writes) | each command reloads | says so on the next key; `R` reloads | offers Reload within 2 s | each request checks the high-water and reloads; `GET /v1/changes` streams them | logical, trigger, commit sync | — |
 | Controlled English | — | accepts it as a formula | shows and accepts it | `/nl/parse`, `/nl/describe` | — | — |
 | Keyboard only, screen readers | yes | yes; works under `NO_COLOR` | yes; every control named for AccessKit | — | — | — |
-| **Access policies** (Cedar) | `policy set`, `show`, `check`; a file has no protection of its own | not applied to a file | not applied to a file | enforced on every route | enforced for every role but the owner's side | — |
+| **Access policies** (Cedar) | `policy set`, `show`, `check`; a file has no protection of its own | not applied to a file | not applied to a file | enforced on every route, a DuckDB file's included | enforced for every role but the owner's side | — (single-user) |
 
 Every front end that saves refuses to overwrite another writer: the save
 fails with a conflict, and you reload and redo the change.
@@ -326,4 +339,6 @@ fails with a conflict, and you reload and redo the change.
 - **A formula as a SQL function:** `LANGUAGE improv`.
 - **Data in DuckDB, Parquet or CSV, answers in one query:** the DuckDB
   extension (`improv_calc`, `improv(source, model)`).
+- **A model in a DuckDB file that several people edit:** `improv-server`
+  on a `duckdb:` target, with the web GUI.
 - **Another service needs answers:** `improv-server`.

@@ -648,11 +648,12 @@ Each stage lands green on its own (fmt, clippy, tests, docs, CHANGELOG).
    the GUI.
 6. **Live updates.** pg NOTIFY and LISTEN; the server's SSE feed, first
    versions only, then filtered deltas.
-7. **DuckDB-hosted models.** A DuckDB model store (catalog tables in the
-   DuckDB file, as `improv.*` in Postgres). improv-server owns the file,
-   since DuckDB allows one writing process per file; it enforces the
-   policies and serves the change feed. The DuckDB extension stays
-   single-user; its README says so.
+7. **DuckDB-hosted models** (done; 0.15). A DuckDB model store (catalog
+   tables in the DuckDB file, as `improv.*` in Postgres). improv-server
+   owns the file, since DuckDB allows one writing process per file; it
+   enforces the policies and serves the change feed. The DuckDB extension
+   stays single-user; its README says so. As built (see
+   [Stage 7 as built](#stage-7-as-built)).
 
 ### Stage 3 as built
 
@@ -774,6 +775,81 @@ Each stage lands green on its own (fmt, clippy, tests, docs, CHANGELOG).
 - **Not done.** Client certificates; `sslnegotiation=direct` is passed to
   the driver untouched (it works with `require`-class modes; `prefer`
   with it is the driver's error); certificate reload without a restart.
+
+### Stage 7 as built
+
+- **The store.** `crates/storage_duckdb` (`improv_storage_duckdb`), a
+  crate of its own rather than a module of `storage_sql`: that crate is a
+  data source and sink (import, export, refresh) that links rusqlite and
+  postgres, and keeps the canonical model out by design. The new crate
+  needs only `core_model` and the bundled `duckdb` 1.20000.1 (DuckDB
+  2.0) `storage_sql` already links, so the workspace keeps one libduckdb.
+  `improv_store::Store::Duck` opens it behind `improv_store`'s `duckdb`
+  feature; the CLI and the server turn it on, so a build of a GUI alone
+  (gui_cosmic's own workspace, the Solnix GUI build) links no DuckDB.
+- **The target.** `duckdb:FILE?model=NAME`; `?model=` is required and no
+  other parameter is accepted. One file holds many models.
+- **The catalog** (`CATALOG_SQL`, version 1 in `improv.catalog`; a newer
+  one is refused): `model`, `model_version` (the conflict token and the
+  high-water), `category`, `item`, `measure` (`categories BIGINT[]` in the
+  measure's order, `format`), `cell` (`coord` JSON as in Postgres, the
+  value in one of `value_number`, `value_boolean`, `value_text`), `view`,
+  `lambda`, `meta`, `policy` (version, text, groups; a NULL text is
+  cleared). No bindings: every cell is a row of `improv.cell`. The cell
+  table has no primary key: DuckDB's ART index made rewriting 1M cells
+  take 24 s against 0.8 s; the store deletes a cell's row before it
+  appends one, inside the save's transaction.
+- **Saves.** One transaction that moves the model's `tx` first, so two
+  racing saves fail at the second write of that row (DuckDB's
+  write-write check) as a `Conflict`, never a lost update; a handle whose
+  loaded `tx` is stale is refused before it writes. `save_changes`
+  deletes and appends only the named cells; with `structure` it replaces
+  the model's catalog rows and drops the cells of dropped measures.
+  `save_model` rewrites the cells of every measure the handle loaded (the
+  closure after `load_partial`). `save_policies` moves the policy
+  version and `tx` on, so change streams reload.
+- **One writer.** DuckDB takes an exclusive lock on the file
+  (`fcntl` on Unix, a share mode on Windows) per instance. An `fcntl`
+  lock belongs to the process, so on Unix two instances in one process
+  would both open the file and both write it. The store keeps a
+  registry of open instances by canonical path; every handle of a
+  process is a connection to its file's one instance, closed with the
+  last handle. A second process gets DuckDB's lock error, reworded:
+  "FILE is open in another program (HOLDER). DuckDB lets one program at a
+  time open a file for writing: while improv-server serves this model,
+  change it through the server, or stop the server first". DuckDB names
+  the holder (program, PID, user) on Linux and macOS, and on Windows when
+  the Restart Manager finds it; elsewhere (FreeBSD, illumos) it is
+  "another program". The instance runs with external access and
+  extension autoloading off.
+- **Measured** (release, werk, 1M cells in one measure; the B12 probe,
+  `IMPROV_B12_STORE=duckdb:…`): `improv import-csv` 2.2 s (a 12 MB file), `improv set` of one cell 1.4 s (all of
+  it the load), a load 1.07 s, one cell's `save_changes` 14 ms (the
+  first 26 ms), a structural `save_changes` 20 ms, an unchanged
+  `save_model` 1.14 s.
+- **The server.** `improv-server duckdb:…` opens a store handle before it
+  listens (`hold_duckdb`) and keeps it until it exits, so it holds the
+  lock for its whole life; a file another program holds stops it with
+  status 2. Everything else is the code every store uses: the authority's
+  per-request high-water check reads `improv.model_version`, policies come
+  from `improv.policy` through `CedarPolicy`, and `/v1/changes` is
+  unchanged.
+- **Tests.** Unit tests per path (corrupt rows, a newer catalog, a
+  non-DuckDB file, Windows' lock message), a proptest that save → load
+  returns the model and an incremental save of the differing cells leaves
+  the second, a two-process lock test, `improv_store`'s shared exercise on
+  a `duckdb:` target, a CLI test (init, import, eval, policy set, a
+  missing file refused), the server's Cedar-filtered change stream over a
+  `duckdb:` model, and `crates/server/tests/duckdb.rs`: the binary over a
+  DuckDB file, a second writer and a second server refused by name, bob's
+  edit reaching ann's stream without WidgetB, ann's edits refused as
+  missing, and the file intact after a kill.
+- **Not done.** The desktop GUIs and the TUI are not tested on `duckdb:`
+  targets, and the COSMIC GUI cannot open them (its build leaves the
+  feature off); they reach a served model as remote clients (stage 5).
+  One server serves one model of a file, so the file's other models are
+  unreachable while it runs. A read-only open (DuckDB allows several
+  read-only processes, but not beside a writer) is not offered.
 
 ### What 0.13 delivers
 

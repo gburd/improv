@@ -9,7 +9,10 @@ Where [`pg_improv`](./postgres.md) keeps a model in Postgres and keeps its
 results current as the data changes, the DuckDB extension is stateless.
 `improv(source, model)` reads the source, computes, and returns rows, the
 way an analytical query does. Nothing is stored and there is nothing to
-keep in sync.
+keep in sync. It is single-user too: it applies no access policies, and
+reads whatever the DuckDB connection reads. To keep a model *in* a DuckDB
+file, edited live by several people under access policies, see
+[DuckDB-hosted models](#duckdb-hosted-models).
 
 <video src="./img/duckdb-demo.mp4" controls muted loop playsinline width="100%"
   poster="./img/duckdb-demo.png">
@@ -203,3 +206,57 @@ improv: model line 7: definition: parse error at 9: unknown measure: Revnue
   [pg_improv](./postgres.md) or [`improv stream`](./ways.md#streaming-improv-stream).
 - Enum and date inputs are not supported in models yet. A date column works
   as a category.
+
+## DuckDB-hosted models
+
+The extension computes and forgets. A **DuckDB-hosted model** is the
+other way round: the model itself (its categories, items, measures,
+input cells, views, LAMBDAs and access policies) lives in tables inside
+a DuckDB file, the way [pg_improv](./postgres.md) keeps its catalog in
+Postgres. Every Improv front end names it with a `duckdb:` target:
+
+```sh
+improv init        'duckdb:/srv/plans.duckdb?model=plan'
+improv import-csv  'duckdb:/srv/plans.duckdb?model=plan' sales.csv 100 Sales amount t:1:Time p:2:Product
+improv policy set  'duckdb:/srv/plans.duckdb?model=plan' plan.cedar
+improv-server      'duckdb:/srv/plans.duckdb?model=plan'
+```
+
+- **`?model=NAME` is required.** One file holds any number of models; a
+  new name makes a new, empty model. A missing file is created by `init`
+  and the imports, and refused by the other commands, as a missing store
+  file is.
+- **One program writes the file at a time.** DuckDB allows one writing
+  process per file. While a program has the file open, every other one is
+  refused with a message that names the holder (`plans.duckdb is open in
+  another program (/usr/bin/improv-server (PID 4242) …)`), never a
+  corrupt file.
+- **Live and shared: through the server.** `improv-server` opens the file
+  before it listens and holds it until it exits. While it runs it is the
+  model's one writer: the [web GUI](./web-gui.md) and other `/v1` clients
+  edit the model live, the model's [access policies](./policies.md) decide
+  what each caller sees and may change, and `GET /v1/changes` brings each
+  edit to the others, filtered for each. See
+  [The HTTP Server](./server.md#duckdb-hosted-models).
+- **The CLI when the server is not running.** Build, import and set the
+  policies with `improv`, then start the server; stop it to run the CLI
+  again.
+- **The desktop GUIs and the TUI** are not supported on `duckdb:`
+  targets yet: edit a DuckDB-hosted model in the web GUI, through the
+  server.
+
+The tables (`improv.model`, `improv.measure`, `improv.cell`,
+`improv.policy`, …) are described in
+[Storage: the DuckDB store](./storage.md#the-duckdb-store). DuckDB itself
+can query them, from a copy or while no Improv program has the file open:
+
+```sql
+ATTACH '/srv/plans.duckdb' AS p (READ_ONLY);
+SELECT m.name, c.coord, c.value_number
+FROM p.improv.cell c JOIN p.improv.measure m USING (model_id)
+WHERE m.id = c.measure_id;
+```
+
+The file is DuckDB 2.0's format: open it with DuckDB 2.0 or later. The
+`improv` extension does not read or write these tables; its
+`improv(source, model)` stays stateless and single-user.
