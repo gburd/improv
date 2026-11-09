@@ -313,13 +313,11 @@ fn bump_version(model_id: i64) -> Res<()> {
     Ok(())
 }
 
-/// A queued notification: the model, its `(model_version.tx,
-/// stale.data_gen)` as seen, and the subtransaction that saw them.
-type Queued = (i64, (i64, i64), pg_sys::SubTransactionId);
-
 thread_local! {
-    /// What this transaction notifies at commit ([`notify`]).
-    static NOTIFY: std::cell::RefCell<Vec<Queued>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// The models this transaction notifies at commit ([`notify`]), each
+    /// with the subtransaction that queued it.
+    static NOTIFY: std::cell::RefCell<Vec<(i64, pg_sys::SubTransactionId)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// `NOTIFY improv_<model id>, '<tx>.<data_gen>'` when this transaction
@@ -329,37 +327,20 @@ thread_local! {
 /// inputs or wrote its results, [`data_moved`]). The payload is the two
 /// numbers and nothing else (any role may `LISTEN` on any channel). A
 /// client listens and re-reads through its normal path, which applies the
-/// model's policies. Queued here and sent by [`send_notifications`] at
-/// `PRE_COMMIT`, once per model with its last pair: Postgres refuses to
-/// `PREPARE` a transaction that has called `NOTIFY`, so a prepared one
-/// sends none, and a rolled-back savepoint takes its own back
-/// ([`notify_subxact`]).
-pub(crate) fn notify(model_id: i64) -> Res<()> {
-    let pair = owner::as_catalog(|| {
-        Spi::connect(|c| {
-            let r = c.select(
-                "SELECT (SELECT tx FROM improv.model_version WHERE model_id = $1), \
-                        (SELECT data_gen FROM improv.stale WHERE model_id = $1)",
-                None,
-                &[model_id.into()],
-            )?;
-            let row = r.first();
-            Ok((
-                row.get::<i64>(1)?.unwrap_or(0),
-                row.get::<i64>(2)?.unwrap_or(0),
-            ))
-        })
-    })?;
+/// model's policies. Only the model is queued here; [`send_notifications`]
+/// reads both numbers at `PRE_COMMIT` (so queueing takes no lock) and
+/// sends one notification per model. Postgres refuses to `PREPARE` a
+/// transaction that has called `NOTIFY`, so a prepared one sends none, and
+/// a rolled-back savepoint takes its own back ([`notify_subxact`]).
+pub(crate) fn notify(model_id: i64) {
     // SAFETY: a read of the backend's transaction state, in a transaction.
     let sub = unsafe { pg_sys::GetCurrentSubTransactionId() };
-    NOTIFY.with(|n| n.borrow_mut().push((model_id, pair, sub)));
-    Ok(())
+    NOTIFY.with(|n| n.borrow_mut().push((model_id, sub)));
 }
 
 /// Model `mid`'s inputs were applied or its results written in this
 /// transaction: move its `data_gen` on, and notify at commit. As the
-/// extension (`improv.stale` is its own); the row is the last lock any
-/// writer takes, after the model's and its version's.
+/// extension (`improv.stale` is its own).
 pub(crate) fn data_moved(mid: i64) -> Res<()> {
     owner::as_catalog(|| {
         Spi::connect_mut(|c| {
@@ -372,7 +353,8 @@ pub(crate) fn data_moved(mid: i64) -> Res<()> {
             Ok(())
         })
     })?;
-    notify(mid)
+    notify(mid);
+    Ok(())
 }
 
 /// A subtransaction ended: an aborted one's notifications go, a committed
@@ -385,25 +367,74 @@ pub(crate) fn notify_subxact(
     NOTIFY.with(|n| {
         let mut n = n.borrow_mut();
         match aborted {
-            true => n.retain(|(.., s)| *s != my),
+            true => n.retain(|(_, s)| *s != my),
             false => n
                 .iter_mut()
-                .filter(|(.., s)| *s == my)
-                .for_each(|x| x.2 = parent),
+                .filter(|(_, s)| *s == my)
+                .for_each(|x| x.1 = parent),
         }
     });
 }
 
-/// At the end of a transaction (`commit::xact_callback`): send the queued
-/// notifications when `send` (pre-commit), else drop them (prepare, abort).
+/// At the end of a transaction (`commit::xact_callback`): when `send`
+/// (pre-commit), read each queued model's `(tx, data_gen)` as this
+/// transaction leaves them and send its notification; else (prepare,
+/// abort) drop them. A failed read sends nothing and never fails the
+/// commit: a listener's next notification, or its poll, catches up.
 pub(crate) fn send_notifications(send: bool) {
     let queued = NOTIFY.with(|n| std::mem::take(&mut *n.borrow_mut()));
-    if !send {
+    if !send || queued.is_empty() {
         return;
     }
-    let last: std::collections::BTreeMap<i64, (i64, i64)> =
-        queued.into_iter().map(|(m, v, _)| (m, v)).collect();
-    for (mid, (tx, data)) in last {
+    let mut models: Vec<i64> = queued.into_iter().map(|(m, _)| m).collect();
+    models.sort_unstable();
+    models.dedup();
+    // SAFETY: in the committing transaction, before its commit work; the
+    // snapshot sees its own writes, and is popped below on every path.
+    unsafe {
+        pg_sys::CommandCounterIncrement();
+        pg_sys::PushActiveSnapshot(pg_sys::GetTransactionSnapshot());
+    }
+    let read = PgTryBuilder::new(|| {
+        owner::as_catalog(|| {
+            Spi::connect(|c| {
+                let rows = c.select(
+                    "SELECT m.id, coalesce(v.tx, 0), coalesce(s.data_gen, 0) \
+                     FROM pg_catalog.unnest($1::pg_catalog.int8[]) m(id) \
+                     LEFT JOIN improv.model_version v ON v.model_id OPERATOR(pg_catalog.=) m.id \
+                     LEFT JOIN improv.stale s ON s.model_id OPERATOR(pg_catalog.=) m.id",
+                    None,
+                    &[models.clone().into()],
+                )?;
+                let mut out = Vec::new();
+                for r in rows {
+                    out.push((req::<i64>(&r, 1)?, req::<i64>(&r, 2)?, req::<i64>(&r, 3)?));
+                }
+                Ok(out)
+            })
+        })
+        .map_err(|e| e.to_string())
+    })
+    .catch_others(|e| {
+        Err(match e {
+            pgrx::pg_sys::panic::CaughtError::PostgresError(r)
+            | pgrx::pg_sys::panic::CaughtError::ErrorReport(r)
+            | pgrx::pg_sys::panic::CaughtError::RustPanic { ereport: r, .. } => {
+                r.message().to_string()
+            }
+        })
+    })
+    .execute();
+    // SAFETY: pops the snapshot pushed above.
+    unsafe { pg_sys::PopActiveSnapshot() };
+    let pairs = match read {
+        Ok(p) => p,
+        Err(e) => {
+            log!("pg_improv: no change notification sent: {e}");
+            return;
+        }
+    };
+    for (mid, tx, data) in pairs {
         let channel = std::ffi::CString::new(format!("improv_{mid}")).expect("no NUL");
         let payload = std::ffi::CString::new(format!("{tx}.{data}")).expect("no NUL");
         // SAFETY: in the committing transaction, before PreCommit_Notify
@@ -427,7 +458,7 @@ fn version_moved<'a>(
             None => true,
         };
         if moved {
-            notify(mid)?;
+            notify(mid);
         }
         Ok(())
     })();
