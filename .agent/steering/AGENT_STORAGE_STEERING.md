@@ -24,7 +24,7 @@ a hard requirement from the source design.
 
 - Dependency: `mentatdb` from crates.io, pinned exactly in
   `[workspace.dependencies]` — `mentat = { package = "mentatdb", version =
-  "=1.19.1" }` (the library is still `mentat`). Not a path dependency:
+  "=1.20.0" }` (the library is still `mentat`). Not a path dependency:
   `path = "../mentat"` made a fresh clone unbuildable. (Until 1.12 it was a
   git dependency pinned by `rev`; the registry needs no `allow-git` and its
   crates carry their own license fields.)

@@ -2830,12 +2830,11 @@ dependencies = [
 
 [[package]]
 name = "http"
-version = "1.1.0"
+version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "21b9ddb458710bc376481b842f5da65cdf31522de232c1ca8146abce2a358258"
+checksum = "918d3568bebf352712bc2ef3d46a8bcf1a75b373be6539de198e9105cbbf9ce0"
 dependencies = [
  "bytes",
- "fnv",
  "itoa",
 ]
 
@@ -3788,9 +3787,9 @@ dependencies = [
 
 [[package]]
 name = "libsqlite3-sys"
-version = "0.38.2"
+version = "0.39.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f1d20bef17f513b9b3004532233187769cd072d790971f4e4da0e346eb6401e8"
+checksum = "14a5f01b87b92705d07b433c06f96cbc764637d81a0bffb5734ce17cf0f9a2b3"
 dependencies = [
  "cc",
  "pkg-config",
@@ -3978,9 +3977,9 @@ dependencies = [
 
 [[package]]
 name = "mentat_core"
-version = "1.19.1"
+version = "1.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2006bec9ba6c2845f31ddc763200b589e6632a666b94aac9ff4dc30f7103c11e"
+checksum = "5a79f218898423e61797a69c32d304c39113a28ba13874a7534af6ba7cb99e6f"
 dependencies = [
  "chrono",
  "enumset",
@@ -3993,9 +3992,9 @@ dependencies = [
 
 [[package]]
 name = "mentat_core_traits"
-version = "1.19.1"
+version = "1.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "22392c2e680ee1d807973e5a3ebedb170afce3f0cbb6d2a1c75f7d97a0d90c6a"
+checksum = "e4c510b1018aa96132a10ce38ec40068efa66fbbcf0e4d2d83891f2a1adb14a6"
 dependencies = [
  "bytes",
  "chrono",
@@ -4011,9 +4010,9 @@ dependencies = [
 
 [[package]]
 name = "mentat_db"
-version = "1.19.1"
+version = "1.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1ec750d22efbd5c5261cd37d4c83d6970b5b5a2c866ecc05d7396521812d0543"
+checksum = "e8fbc600235c47a39cb547956faea51430368b318473d59e34d46ebaee48481a"
 dependencies = [
  "indexmap 2.14.2",
  "itertools 0.15.0",
@@ -4025,7 +4024,7 @@ dependencies = [
  "mentat_edn",
  "mentat_sql",
  "ordered-float 5.5.1",
- "petgraph 0.6.5",
+ "petgraph 0.8.3",
  "rusqlite",
  "tabwriter",
  "time",
@@ -4033,9 +4032,9 @@ dependencies = [
 
 [[package]]
 name = "mentat_db_traits"
-version = "1.19.1"
+version = "1.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "03159323e1b89bf9e3b9aeebdebdcc56e8839667181790d8519924125cd5602a"
+checksum = "231fdf1fb39bdc866220550672cc3617166ed2d1cb7f22ba5e47ebba4b03666c"
 dependencies = [
  "mentat_core_traits",
  "mentat_edn",
@@ -4046,9 +4045,9 @@ dependencies = [
 
 [[package]]
 name = "mentat_edn"
-version = "1.19.1"
+version = "1.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8da99ee47a3e87baf320533175f5b632472a154ac7900947fe8e233d8e89a219"
+checksum = "0f732e11474c03eadf58245da5d37b6858e2c19f733dc6c48b820078f4146468"
 dependencies = [
  "bytes",
  "chrono",
@@ -4065,9 +4064,9 @@ dependencies = [
 
 [[package]]
 name = "mentat_public_traits"
-version = "1.19.1"
+version = "1.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7b41fb9f8e239725a6eb43fb2803eb8b14231e988d12018a75f17fd57c11fc08"
+checksum = "47c557fc6956132821bb9031f92f2befcc8f33b1d8ebb2abb809decbc0d355e3"
 dependencies = [
  "http",
  "mentat_core_traits",
@@ -4085,9 +4084,9 @@ dependencies = [
 
 [[package]]
 name = "mentat_query_algebrizer"
-version = "1.19.1"
+version = "1.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a8a79c77ca8cc7502718660f747af0828cd45009339211d39d3a717a83fc9975"
+checksum = "d5d9d3a83ddabe1f25759f23413c7c2e2fd3db2755b815984179c18dc3b728c2"
 dependencies = [
  "mentat_core",
  "mentat_core_traits",
@@ -4097,9 +4096,9 @@ dependencies = [
 
 [[package]]
 name = "mentat_query_algebrizer_traits"
-version = "1.19.1"
+version = "1.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6ab4dbefa116897cc407a494fe91d52f5db010ae5d77183fd9bd972b3e7c25ca"
+checksum = "b667155004555018be534c72212e7a992926d8fde4ac2f820fdb88635ca9ec05"
 dependencies = [
  "mentat_core_traits",
  "mentat_edn",
@@ -4108,9 +4107,9 @@ dependencies = [
 
 [[package]]
 name = "mentat_query_projector"
-version = "1.19.1"
+version = "1.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7516d6f11559fcb9916b6ea8e7bbb54dd1966aaff2456dfa78d30f26984325af"
+checksum = "826fd6041284200e76d1902a83f6eec0eaf91ee7a246ce86dfb1c1d92be8a3d1"
 dependencies = [
  "indexmap 2.14.2",
  "mentat_core",
@@ -4129,9 +4128,9 @@ dependencies = [
 
 [[package]]
 name = "mentat_query_projector_traits"
-version = "1.19.1"
+version = "1.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6d17aa6dd034fc7426ba7a52669f32fd4b1268a9a69c263ec3debd3ccc755dbf"
+checksum = "bcfc4b237bb8469dd2a880e350d21950f42400e241df45c423d9c77dc685ea9d"
 dependencies = [
  "mentat_core_traits",
  "mentat_db_traits",
@@ -4146,9 +4145,9 @@ dependencies = [
 
 [[package]]
 name = "mentat_query_pull"
-version = "1.19.1"
+version = "1.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6560833660a6972839d6efe25431b6d099f3959a8ef471b82a7c5f4feacfcf02"
+checksum = "cc3f25c0b510e895d26eb3c35bdcf131cee009f4b9159c8aab819ddcdac17536"
 dependencies = [
  "mentat_core",
  "mentat_core_traits",
@@ -4163,9 +4162,9 @@ dependencies = [
 
 [[package]]
 name = "mentat_query_pull_traits"
-version = "1.19.1"
+version = "1.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3cf3d7304529f645419b18b640a00a00fb079df873aa7fb5ddc4b84e054c6646"
+checksum = "4eb29fa94f062b95e5555cc39243192c62c0e3a24dc5b32f6be2cb9adac4d9ab"
 dependencies = [
  "mentat_core_traits",
  "mentat_db_traits",
@@ -4174,9 +4173,9 @@ dependencies = [
 
 [[package]]
 name = "mentat_query_sql"
-version = "1.19.1"
+version = "1.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b38b9a816e608df6f4d7adc8f75e67347b80d6ae10797dde8e2845d17256fd0f"
+checksum = "88eda99d9e687a2cb30413d2e9876bd0f04237ffd10d745863fa0465ac04a6c0"
 dependencies = [
  "mentat_core",
  "mentat_core_traits",
@@ -4189,9 +4188,9 @@ dependencies = [
 
 [[package]]
 name = "mentat_sql"
-version = "1.19.1"
+version = "1.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c4e81aae6b28622d15592d87a035f4e67b6a73279ce1439410c206351321ea46"
+checksum = "8fca76b1d3b70df611f0373b43e263cbd4ad6a53773915ef941f1a12b4265f82"
 dependencies = [
  "mentat_core",
  "mentat_core_traits",
@@ -4202,18 +4201,18 @@ dependencies = [
 
 [[package]]
 name = "mentat_sql_traits"
-version = "1.19.1"
+version = "1.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fa97cb0210c5b4ffd9f9a0323eeb2c8fe50411770cf6d3ce89a74c85922431a8"
+checksum = "c5b77f69cce73519354bffae0e435589a562d1cd6e558e6184faab9cf0b67ead"
 dependencies = [
  "thiserror 2.0.21",
 ]
 
 [[package]]
 name = "mentat_transaction"
-version = "1.19.1"
+version = "1.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "15d6a738a36eeb49501420ff0d01fc4ba7e9311fbadd33290158a8a465ee3cb0"
+checksum = "c3816cfafb220a3e0c33bbe3c0fe338572721ef57a6bd322c8003d723126c6db"
 dependencies = [
  "mentat_core",
  "mentat_core_traits",
@@ -4232,9 +4231,9 @@ dependencies = [
 
 [[package]]
 name = "mentatdb"
-version = "1.19.1"
+version = "1.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "056c036b400e144d7f2407d407f24340c54d40fe54a59670f09a15ff7ce8abcd"
+checksum = "755b528bcd83e2f81983def44af33cb1308d33c4c50a4a48117490177875f3d4"
 dependencies = [
  "chrono",
  "lazy_static",
@@ -5192,16 +5191,6 @@ dependencies = [
 
 [[package]]
 name = "petgraph"
-version = "0.6.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b4c5cc86750666a3ed20bdaf5ca2a0344f9c67674cae0515bec2da16fbaa47db"
-dependencies = [
- "fixedbitset 0.4.2",
- "indexmap 2.14.2",
-]
-
-[[package]]
-name = "petgraph"
 version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3672b37090dbd86368a4145bc067582552b29c27377cad4e0a306c97f9bd7772"
@@ -5219,6 +5208,7 @@ dependencies = [
  "fixedbitset 0.5.7",
  "hashbrown 0.15.5",
  "indexmap 2.14.2",
+ "serde",
 ]
 
 [[package]]
@@ -5917,9 +5907,9 @@ dependencies = [
 
 [[package]]
 name = "rusqlite"
-version = "0.40.2"
+version = "0.41.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "23f2a97da3e3873c73cb2a2e71b35c40ff95e0b1eefa8d72d8499a6928c3b5b3"
+checksum = "da9bba6f3506135e120a6586df05be18b48d18896600646a4bec8f993d91a594"
 dependencies = [
  "bitflags 2.13.2",
  "fallible-iterator 0.3.0",
@@ -7475,9 +7465,9 @@ checksum = "3a3b425286980a367278453f3b6d28cdcb134b574e5a35824a6ff5eebad50bb6"
 
 [[package]]
 name = "uuid"
-version = "1.25.0"
+version = "1.29.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f053576934f05a761a402421fbbe3d425d9366f75f978806a037b3ca481abecc"
+checksum = "bed99139f7dac9b5cfe5f17be4d66dc7079a34dee1d74bcc77217119240e267c"
 dependencies = [
  "atomic",
  "getrandom 0.4.3",

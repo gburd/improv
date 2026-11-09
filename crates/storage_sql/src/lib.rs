@@ -903,8 +903,7 @@ mod tests {
             .prepare("SELECT * FROM o")
             .unwrap()
             .column_names()
-            .iter()
-            .map(|s| s.to_string())
+            .map(str::to_string)
             .collect();
         assert_eq!(cols, ["Fiscal_Year", "cat2", "v"]);
         let err = export_measure(&out, &model, MeasureId(999), "o", "v").unwrap_err();

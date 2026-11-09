@@ -176,9 +176,6 @@ fn value_attr(vt: ValueType) -> &'static str {
 /// in-memory).
 pub struct ModelStore {
     store: Store,
-    /// Where `store` was opened (`""`: in memory), to reopen it when another
-    /// process has written (see [`ModelStore::fresh_for_write`]).
-    path: String,
     /// The high-water as of this handle's last load or save; `save_model`
     /// refuses to commit if the store has moved past it. `None`: unchecked.
     loaded_tx: Option<i64>,
@@ -209,7 +206,6 @@ impl ModelStore {
         }
         Ok(ModelStore {
             store,
-            path: path.to_owned(),
             loaded_tx: None,
             loaded_scope: None,
             #[cfg(test)]
@@ -303,7 +299,6 @@ impl ModelStore {
         cells: Option<&[(MeasureId, Coordinate)]>,
         structure: bool,
     ) -> Result<()> {
-        self.fresh_for_write()?;
         // IMMEDIATE: no other writer can commit between this check and ours.
         let mut ip = self.store.begin_transaction()?;
         if let Some(loaded) = self.loaded_tx {
@@ -484,34 +479,6 @@ impl ModelStore {
         Ok(())
     }
 
-    /// Reopen the Mentat store when another process has committed since this
-    /// handle last did. Mentat keeps the next entity and transaction ids in
-    /// memory and never re-reads them, so a long-lived handle (the server,
-    /// a GUI) writing after the CLI wrote the same file reused the CLI's
-    /// transaction id and could give a new entity an id the CLI's already
-    /// had, merging the two (one of them lost). A reopen reads them again.
-    /// In memory there is no other process.
-    fn fresh_for_write(&mut self) -> Result<()> {
-        if self.path.is_empty() {
-            return Ok(());
-        }
-        let newest: i64 = self
-            .store
-            .sqlite_ref()
-            .query_row(
-                // The newest row's: rows are appended, so O(1) by rowid.
-                "SELECT coalesce((SELECT tx FROM timelined_transactions \
-                 ORDER BY rowid DESC LIMIT 1), 0)",
-                [],
-                |r| r.get(0),
-            )
-            .map_err(|e| StoreError::Mentat(e.to_string()))?;
-        if newest != self.store.last_tx_id() {
-            self.store = Store::open(&self.path)?;
-        }
-        Ok(())
-    }
-
     /// The store's latest transaction id, read live from SQLite (so it sees
     /// other processes' commits).
     pub fn tx_high_water(&mut self) -> Result<i64> {
@@ -561,7 +528,6 @@ impl ModelStore {
     /// caller), or clear them with `None`, in one transaction that also
     /// moves their version on. Returns the new version.
     pub fn save_policies(&mut self, policies: Option<(&str, &str)>) -> Result<i64> {
-        self.fresh_for_write()?;
         let mut ip = self.store.begin_transaction()?;
         let stored = rel_on(
             &ip,
@@ -1021,10 +987,14 @@ fn retract_cleared_formats(ip: &mut InProgress<'_, '_>, model: &Model) -> Result
     transact_group(ip, 1, gone)
 }
 
-/// Whether every attribute `SCHEMA_EDN` defines is in `store`'s schema.
+/// Whether every attribute `SCHEMA_EDN` defines is in `store`'s schema, as
+/// the file holds it now (another program may have installed them). A read
+/// error reads as not installed, so the open installs them again.
 fn schema_installed(store: &Store) -> bool {
     use mentat::HasSchema;
-    let installed = store.conn().current_schema();
+    let Ok(installed) = store.current_schema() else {
+        return false;
+    };
     schema::SCHEMA_EDN.split(":db/ident :").skip(1).all(|rest| {
         let ident = rest.split_whitespace().next().unwrap_or_default();
         ident.split_once('/').is_some_and(|(ns, name)| {
@@ -2001,9 +1971,9 @@ mod tests {
 
     /// A long-lived handle that reloads after another process wrote, then
     /// saves new cells: each write gets its own transaction (the high water
-    /// moves on), and neither writer's new cell is lost. Mentat's cached
-    /// next ids made A reuse B's transaction id and B's new entity's id, so
-    /// B's cell was overwritten by A's.
+    /// moves on), and neither writer's new cell is lost. Mentat before 1.20
+    /// cached the next ids, so A reused B's transaction id and B's new
+    /// entity's id, and B's cell was overwritten by A's.
     #[test]
     fn a_reloaded_handle_writes_after_another_process_without_reusing_ids() {
         let path = temp_store_path("ids");

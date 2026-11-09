@@ -24,10 +24,10 @@ version = "1.20000.1"
 features = ["bundled"]
 
 [dependencies.rusqlite]
-# 0.40, Mentat's line: mentatdb 1.19.1 needs rusqlite ~0.40, and a second
-# bundled libsqlite3-sys (0.41 takes 0.39) cannot link beside it (`links =
-# "sqlite3"`). Move with Mentat.
-version = "0.40"
+# 0.41, Mentat's line: mentatdb 1.20.0 needs rusqlite ~0.41, and a second
+# bundled libsqlite3-sys cannot link beside it (`links = "sqlite3"`). Move
+# with Mentat. 0.41 bundles SQLite 3.54.1 (RUSTSEC-2026-0459).
+version = "0.41"
 features = ["bundled"]
 
 [dev-dependencies]

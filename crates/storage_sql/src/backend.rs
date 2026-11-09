@@ -188,7 +188,7 @@ fn sqlite_query(conn: &rusqlite::Connection, sql: &str) -> Result<Table> {
             "refusing SQL query: statement is not read-only".into(),
         ));
     }
-    let columns: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
+    let columns: Vec<String> = stmt.column_names().map(str::to_string).collect();
     let ncols = columns.len();
     let mut rows_iter = stmt.query([])?;
     let mut rows = Vec::new();
