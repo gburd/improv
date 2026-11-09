@@ -248,9 +248,12 @@ for from in "$@"; do
 	eq "$(q "SELECT format_type(atttypid, atttypmod) FROM pg_attribute WHERE attrelid = 'improv.stale'::regclass AND attname = 'data_gen'")" \
 		bigint "data_gen after the update"
 	mid=$(q "SELECT id FROM improv.model WHERE name = 'plan'")
+	next=$(( $(q "SELECT tx FROM improv.model_version WHERE model_id = $mid") + 1 ))
+	# The sync worker may notify for its own commit too: look for ours, the
+	# new version's.
 	heard=$("$PG_BIN/psql" -h "$W" -p "$P" -U improv -d t -qAtX -c "LISTEN improv_$mid" \
-		-c "UPDATE improv.model_version SET tx = tx + 1 WHERE model_id = $mid" -c "SELECT 1" 2>&1 | grep -c "notification \"improv_$mid\" with payload \"[0-9]*\.[0-9]*\"" || true)
-	eq "$heard" 1 "an updated model notifies at commit"
+		-c "UPDATE improv.model_version SET tx = tx + 1 WHERE model_id = $mid" -c "SELECT 1" 2>&1 | grep -c "notification \"improv_$mid\" with payload \"$next\.[0-9]*\"" || true)
+	eq "$((heard > 0))" 1 "an updated model notifies at commit"
 	# From before 0.13.0 the update makes improv.stale, and no model's rows
 	# are vouched for until it recomputes. (The worker's rebuild of the
 	# logical model is a full recompute, which may already have vouched for
