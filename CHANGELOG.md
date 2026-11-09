@@ -38,6 +38,13 @@ this project follows [Semantic Versioning](https://semver.org/).
   checks read Chromium's accessibility tree), and a field's text cannot
   be read back while typing. See the web GUI guide, "Accessibility".
 
+### Changed
+
+- **improv-cosmic: a copied range's HTML marks its headers.** The row and
+  column labels are `<th>` cells, and a paste skips `<th>` cells, so a
+  range copied from improv-cosmic pastes back as its values, not offset by
+  its labels, on every platform.
+
 ## [0.14.0] - 2026-11-08
 
 The release that encrypts every connection off the machine. Every Improv

@@ -78,7 +78,8 @@ with no GPU backend. Without an argument the model is in memory only.
 - **Copy and paste.** Ctrl+C copies the range as tab-separated values and,
   where the clipboard takes several formats (Wayland), as an HTML table with
   its headers too, so spreadsheets and editors paste it as a table. Ctrl+V
-  pastes a range from either at the cursor, as one change.
+  pastes a range from either at the cursor, as one change (from HTML, the
+  values without the headers).
 - **Open, Save As and Print.** Through the desktop's file chooser and print
   dialog (the XDG portals); on Windows, the native file dialogs, and Print
   opens the PDF in the default viewer. A model file dropped on the window

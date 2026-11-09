@@ -5,8 +5,9 @@
 //! TSV is the spreadsheet convention: one line per row, a tab between
 //! cells, a field quoted (`"…"`, `""` for a quote) only when it holds a
 //! tab, a newline or a quote. HTML is one `<table>` with each cell's text
-//! escaped; on paste the cells are read from its `<td>`/`<th>` elements,
-//! tags inside them dropped and entities decoded.
+//! escaped, the headers in `<th>`; on paste the cells are read from its
+//! `<td>` elements, tags inside them dropped and entities decoded, and the
+//! `<th>` headers skipped (they label the values, they are not values).
 
 use std::borrow::Cow;
 
@@ -126,14 +127,19 @@ fn unescape(s: &str) -> String {
     out
 }
 
-/// Rows of cell texts as an HTML table: the first row's cells in `<th>`
-/// when `header` (the grid's column headers), the rest in `<td>`.
+/// Rows of cell texts as an HTML table: when `header`, the first row and
+/// the first column in `<th>` (the grid's column and row headers), the
+/// values in `<td>`.
 pub fn to_html(rows: &[Vec<String>], header: bool) -> String {
     let mut out = String::from("<meta charset=\"utf-8\"><table>\n");
     for (i, r) in rows.iter().enumerate() {
-        let tag = if header && i == 0 { "th" } else { "td" };
         out.push_str("<tr>");
-        for c in r {
+        for (j, c) in r.iter().enumerate() {
+            let tag = if header && (i == 0 || j == 0) {
+                "th"
+            } else {
+                "td"
+            };
             out.push_str(&format!("<{tag}>{}</{tag}>", escape(c)));
         }
         out.push_str("</tr>\n");
@@ -143,7 +149,8 @@ pub fn to_html(rows: &[Vec<String>], header: bool) -> String {
 }
 
 /// The cells of the first `<table>` in `html`, row by row; `None` without
-/// one. Text inside a cell keeps its words, its tags dropped.
+/// one. Text inside a cell keeps its words, its tags dropped. Header cells
+/// (`<th>`) are skipped, and a row of headers only with them.
 pub fn from_html(html: &str) -> Option<Vec<Vec<String>>> {
     let lower = html.to_ascii_lowercase();
     let start = lower.find("<table")?;
@@ -158,6 +165,7 @@ pub fn from_html(html: &str) -> Option<Vec<Vec<String>>> {
         let r1 = tl[r0 + 3..].find("<tr").map_or(t.len(), |n| r0 + 3 + n);
         let (row, rowl) = (&t[r0..r1], &tl[r0..r1]);
         let mut cells = Vec::new();
+        let mut headers = 0;
         let mut c = 0;
         while let Some(o) = [rowl[c..].find("<td"), rowl[c..].find("<th")]
             .into_iter()
@@ -165,6 +173,7 @@ pub fn from_html(html: &str) -> Option<Vec<Vec<String>>> {
             .min()
         {
             let open = c + o;
+            let header = rowl[open..].starts_with("<th");
             let Some(gt) = rowl[open..].find('>') else {
                 break;
             };
@@ -179,10 +188,16 @@ pub fn from_html(html: &str) -> Option<Vec<Vec<String>>> {
             .flatten()
             .min()
             .map_or(row.len(), |e| body + e);
-            cells.push(unescape(strip_tags(&row[body..close]).trim()));
+            if header {
+                headers += 1;
+            } else {
+                cells.push(unescape(strip_tags(&row[body..close]).trim()));
+            }
             c = close;
         }
-        rows.push(cells);
+        if headers == 0 || !cells.is_empty() {
+            rows.push(cells);
+        }
         at = r1;
     }
     Some(rows)
@@ -291,9 +306,29 @@ mod tests {
     #[test]
     fn html_round_trips_and_escapes() {
         let r = rows(&[&["Q1", "<b>&"], &["1", "2"]]);
-        let h = to_html(&r, true);
-        assert!(h.contains("<th>&lt;b&gt;&amp;</th>"), "{h}");
+        let h = to_html(&r, false);
+        assert!(h.contains("<td>&lt;b&gt;&amp;</td>"), "{h}");
         assert_eq!(from_html(&h), Some(r));
+    }
+
+    #[test]
+    fn headers_go_in_th_and_a_paste_reads_the_values_only() {
+        // What a copy writes: the corner, column headers, row headers.
+        let h = to_html(&rows(&[&["", "Q1", "Q2"], &["2025", "1", "<2>"]]), true);
+        assert!(
+            h.contains("<tr><th></th><th>Q1</th><th>Q2</th></tr>"),
+            "{h}"
+        );
+        assert!(
+            h.contains("<th>2025</th><td>1</td><td>&lt;2&gt;</td>"),
+            "{h}"
+        );
+        assert_eq!(from_html(&h), Some(rows(&[&["1", "<2>"]])));
+        // A row with no cells at all still counts (it moves the next one).
+        assert_eq!(
+            from_html("<table><tr></tr><tr><td>x</td></tr></table>"),
+            Some(vec![vec![], vec!["x".to_string()]])
+        );
     }
 
     #[test]
