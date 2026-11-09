@@ -84,29 +84,6 @@ this project follows [Semantic Versioning](https://semver.org/).
   not edit says so, a refusal says why, and other writers' changes
   redraw as they arrive. The token comes from `IMPROV_API_TOKEN` or a
   prompt.
-
-### Fixed
-
-- **Mentat 1.20.0: a long-lived store sees other programs' writes.** The
-  stale-handle workaround (a reopen before each write when another program
-  had committed) is gone: Mentat now notices another connection's commits
-  itself and re-reads its ids, schema and caches, so a GUI or the server
-  writing after the CLI no longer risks reusing its ids. The test that
-  caught the data loss stays. Storage timings are unchanged
-  (`docs/reviews/2026-11-09-mentat-1.20-upgrade.md`).
-
-### Security
-
-- **Bundled SQLite 3.54.1 (RUSTSEC-2026-0459, CVE-2026-119375).** SQLite
-  before 3.54.0 could return uninitialized memory when it opened a
-  database together with a `-wal` file of a different page size, so a
-  crafted model file and its `-wal` could make queries return, and a save
-  write back, stale bytes of the program's memory. Mentat 1.20.0 (`mentatdb`)
-  and rusqlite 0.41 bundle the fixed SQLite; every Improv binary that opens
-  a model file or a SQL source (the CLI, TUI, GUIs and improv-server)
-  carries it.
-### Changed
-
 - **pg_improv 0.15.0: live updates.** A transaction that moves a model's
   version or applies its inputs or writes its results (the sync worker,
   trigger and commit modes, `improv.recalc`) sends `NOTIFY improv_<model
@@ -129,6 +106,27 @@ this project follows [Semantic Versioning](https://semver.org/).
   without the notifications is polled as before.
   `improv_store::Store::listen` and `improv_storage_pg::{Listener, Heard}`
   are the API.
+
+### Fixed
+
+- **Mentat 1.20.0: a long-lived store sees other programs' writes.** The
+  stale-handle workaround (a reopen before each write when another program
+  had committed) is gone: Mentat now notices another connection's commits
+  itself and re-reads its ids, schema and caches, so a GUI or the server
+  writing after the CLI no longer risks reusing its ids. The test that
+  caught the data loss stays. Storage timings are unchanged
+  (`docs/reviews/2026-11-09-mentat-1.20-upgrade.md`).
+
+### Security
+
+- **Bundled SQLite 3.54.1 (RUSTSEC-2026-0459, CVE-2026-119375).** SQLite
+  before 3.54.0 could return uninitialized memory when it opened a
+  database together with a `-wal` file of a different page size, so a
+  crafted model file and its `-wal` could make queries return, and a save
+  write back, stale bytes of the program's memory. Mentat 1.20.0 (`mentatdb`)
+  and rusqlite 0.41 bundle the fixed SQLite; every Improv binary that opens
+  a model file or a SQL source (the CLI, TUI, GUIs and improv-server)
+  carries it.
 
 ## [0.14.0] - 2026-11-08
 
