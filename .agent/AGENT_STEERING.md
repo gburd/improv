@@ -40,19 +40,14 @@ stages 1-4 in 0.13).
   loopback without TLS need `IMPROV_ALLOW_PLAIN=1` (the image does not set
   it). Live TLS tests on `IMPROV_TEST_PG_TLS` (CI coverage job: PG 17 with
   ssl=on). As built: the design note's "Stage 4 as built".
-- **Stage 7 DONE** (`work/duck`, for 0.15): `crates/storage_duckdb`
-  (`duckdb:FILE?model=NAME`, an `improv.*` catalog in the DuckDB file,
-  one DuckDB instance per file per process, a second process refused by
-  name), `improv_store`'s `duckdb` feature (CLI and server), and
-  improv-server holding the file as its one writer (`hold_duckdb`).
-  As built: the design note's "Stage 7 as built".
 - **Stage 7 DONE** (on main, `b6380a1`..`facba7b`, for 0.15): DuckDB-hosted
   models. `crates/storage_duckdb` (`duckdb:FILE?model=NAME`, the bundled
   duckdb, an `improv.*` catalog, diff saves, `improv.model_version` as
-  conflict token and high-water, one instance per file per process);
-  `improv_store` feature `duckdb` (on in the CLI and server only);
-  improv-server holds the file as its one writer, Cedar and `/v1/changes`
-  as for other stores. No primary key on `improv.cell` (a 1M-cell rewrite
+  conflict token and high-water, one instance per file per process, a
+  second process refused by name); `improv_store` feature `duckdb` (on in
+  the CLI and server only); improv-server holds the file as its one writer
+  (`hold_duckdb`), Cedar and `/v1/changes` as for other stores. As built:
+  the design note's "Stage 7 as built". No primary key on `improv.cell` (a 1M-cell rewrite
   was 30x slower with one): a one-cell save scans the model's cells, 14 ms
   at 1M. Not yet: desktop GUIs/TUI on `duckdb:` (use the web GUI), one
   model per server.
