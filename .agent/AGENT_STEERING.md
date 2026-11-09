@@ -46,7 +46,19 @@ stages 1-4 in 0.13).
   name), `improv_store`'s `duckdb` feature (CLI and server), and
   improv-server holding the file as its one writer (`hold_duckdb`).
   As built: the design note's "Stage 7 as built".
-- **NEXT:** stage 5, filtered clients.
+- **Stage 7 DONE** (on main, `b6380a1`..`facba7b`, for 0.15): DuckDB-hosted
+  models. `crates/storage_duckdb` (`duckdb:FILE?model=NAME`, the bundled
+  duckdb, an `improv.*` catalog, diff saves, `improv.model_version` as
+  conflict token and high-water, one instance per file per process);
+  `improv_store` feature `duckdb` (on in the CLI and server only);
+  improv-server holds the file as its one writer, Cedar and `/v1/changes`
+  as for other stores. No primary key on `improv.cell` (a 1M-cell rewrite
+  was 30x slower with one): a one-cell save scans the model's cells, 14 ms
+  at 1M. Not yet: desktop GUIs/TUI on `duckdb:` (use the web GUI), one
+  model per server.
+- **NEXT:** stages 5 and 6 (agent `live`, branch `work/live`), web
+  accessibility (`work/a11y`), COSMIC Windows clipboard and DnD
+  (`work/cwin`).
 - **Rule for every front end:** a client under a read policy never
   computes derived values itself; it reads them, and what-ifs, from the
   authority. Hidden is absent. Versions are opaque. (`improv_client`'s
