@@ -179,18 +179,25 @@ branch (it needs a `PAGES_PUSH_TOKEN` secret).
    `crates/pg_improv`, `crates/duckdb_improv` and `fuzz`; CI builds each
    with `--locked`), add the update script
    `crates/pg_improv/sql/pg_improv--<old>--<new>.sql`, and move the
-   CHANGELOG's `[Unreleased]` section under the new version.
-2. Push to `main`, wait for CI, then push a signed annotated tag `vX.Y.Z`.
+   CHANGELOG's `[Unreleased]` section under the new version. Bump
+   `crates/gui_cosmic` too, and its lockfile.
+2. Re-record the COSMIC GUI movie that the README and the COSMIC chapter
+   play, from the release candidate: `docs/demo/cosmic-movie.sh`, with
+   release builds of `improv_cli` and `crates/gui_cosmic` (`IMPROV_BIN=`,
+   `IMPROV_COSMIC=`; see `docs/demo/README.md`). Run it with
+   `COSMIC_MOVIE_SHOTS=1`, check each beat's still, then commit
+   `docs/src/img/cosmic-demo.{mp4,gif,png}` with the release.
+3. Push to `main`, wait for CI, then push a signed annotated tag `vX.Y.Z`.
    Before tagging, dry-run the release on the GitHub mirror:
    `gh workflow run release.yml -R gburd/improv --ref main` builds and
    install-tests everything a tag would and publishes nothing.
-3. On the GitHub mirror, `release.yml` builds and qualifies the binaries
+4. On the GitHub mirror, `release.yml` builds and qualifies the binaries
    and pg_improv packages, makes the GitHub Release, publishes to
    [PGXN](https://pgxn.org/dist/pg_improv/) (`pgxn.yml`), and drafts the
    postgresql.org news for an X.Y.0 release (`ci/announce.sh`).
-4. Check the run succeeded and that https://api.pgxn.org/dist/pg_improv.json
+5. Check the run succeeded and that https://api.pgxn.org/dist/pg_improv.json
    lists the version (`pgxn.yml` waits for it and fails if it does not).
-5. Verify the release as a user would ([Verifying a
+6. Verify the release as a user would ([Verifying a
    release](docs/src/running.md#verifying-a-release)): download it with
    `gh release download vX.Y.Z -R gburd/improv`, then run `cosign
    verify-blob` on `SHA256SUMS` and `sha256sum -c SHA256SUMS`.
