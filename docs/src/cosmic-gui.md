@@ -105,6 +105,32 @@ engine.
 | illumos (Solnix) | Builds with Solnix's own COSMIC fixups (`crates/gui_cosmic/ci/solnix-build.sh`); runs in a Solnix COSMIC session with `ICED_BACKEND=tiny-skia`. |
 | Windows 11 (x64, arm64) | Builds and starts. Copies and pastes ranges as text and HTML, and drags and drops text and tables with other applications. improv-cosmic does these itself, since libcosmic's Windows clipboard does not. **Known limitation:** no accessibility on Windows yet. **Release blockers until hand-checked:** a real drag between two applications on an interactive desktop has not been checked by hand yet (only in-process tests ran, over ssh). The checklist is in `docs/reviews/patches/window_clipboard-windows-formats.md`. |
 
+## Licensing
+
+improv-cosmic is MIT OR Apache-2.0, like the rest of Improv. libcosmic is
+MPL-2.0, except one file: `src/localize.rs`, the loader for libcosmic's
+own translations (the Close button of its drawers, its calendar's month
+names), says `SPDX-License-Identifier: GPL-3.0-only`, and libcosmic always
+compiles it. Until upstream answers
+[pop-os/libcosmic#1500](https://github.com/pop-os/libcosmic/issues/1500),
+a release build (`crates/gui_cosmic/release/build.sh`, and every package
+we distribute) replaces that one file with Improv's own MIT OR Apache-2.0
+implementation of the same interface. It loads the same translations, so
+nothing changes on screen. A build from a checkout with plain `cargo`
+keeps upstream's file. Once upstream relicenses it, the replacement and
+its check are dropped.
+
+The same release step scans every vendored crate's files for
+`SPDX-License-Identifier` headers. GPL and AGPL fail the build. Improv may
+link LGPL code unmodified, and any change we make to LGPL code is
+published upstream under that licence (CONTRIBUTING.md, "Licences of
+dependencies"). So an LGPL file must be listed in
+`crates/gui_cosmic/release/license-allow.txt` and must match its upstream
+crate. The listed files today are 18 KDE Wayland protocol descriptions
+(XML), LGPL-2.1-or-later, inside two MIT crates, `wayland-protocols-plasma`
+and `wayland-protocols-misc`, which compile them into generated bindings.
+The egui GUI's dependencies contain the same two crates.
+
 ## Not yet
 
 What `improv-gui` has and `improv-cosmic` does not, yet: several matrices

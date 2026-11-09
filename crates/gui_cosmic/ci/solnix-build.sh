@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # Build improv-cosmic on Solnix (illumos), the way Solnix builds its own
 # COSMIC apps (graphics/cosmic-apps.nix there): vendor the locked crates,
-# apply Solnix's illumos fixups to the vendored sources, build offline
-# without wgpu. Run on the Solnix host, in crates/gui_cosmic:
+# apply Solnix's illumos fixups to the vendored sources, replace
+# libcosmic's GPL localize.rs and scan the licences (release/
+# vendor-libcosmic.sh, pop-os/libcosmic#1500), build offline without
+# wgpu. Run on the Solnix host, in crates/gui_cosmic:
 #
 #   ci/solnix-build.sh [cargo build args...]     e.g. --release
 #
@@ -72,16 +74,24 @@ export LD_LIBRARY_PATH=$gcclib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
 [ -n "${SSL_CERT_FILE:-}" ] || [ ! -f /etc/ssl/certs/ca-certificates.crt ] ||
 	export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
 
-# Vendor once per Cargo.lock; the fixups edit the vendored copies (and
-# re-stamp their checksums), never the registry.
+# Vendor once per Cargo.lock (and release/ patch); the fixups edit the
+# vendored copies (and re-stamp their checksums), never the registry. The
+# snapshot comes first, so the licence scan sees what the fixups changed.
 v=target/solnix/vendor
-if ! cmp -s Cargo.lock target/solnix/Cargo.lock.vendored; then
+stamp=$(cat Cargo.lock release/localize.rs release/license-allow.txt | sha256sum)
+if [ "$stamp" != "$(cat target/solnix/vendored 2>/dev/null)" ]; then
 	find "$v" -delete 2>/dev/null || true
 	mkdir -p target/solnix/.cargo
 	cargo vendor --locked "$v" >target/solnix/.cargo/config.toml
+	python3 release/license-scan.py snapshot "$v"
 	bash "$G/cosmic-comp-vendor-fixup.sh" "$crate/$v"
 	python3 "$G/cosmic-widen-linux.py" "$v" libcosmic 'iced?' 'iced_core?' 'iced_runtime?' 'iced_winit?' 'iced_widget?'
-	cp Cargo.lock target/solnix/Cargo.lock.vendored
+	release/vendor-libcosmic.sh "$v" --patch-only
+	# cargo takes vendored sources as immutable: drop what an older tree built.
+	sed -i "s|directory = \".*\"|directory = \"$crate/$v\"|" target/solnix/.cargo/config.toml
+	cargo --config target/solnix/.cargo/config.toml clean --offline -p libcosmic
+	cargo --config target/solnix/.cargo/config.toml clean --offline -p libcosmic --release
+	echo "$stamp" >target/solnix/vendored
 fi
 # cargo vendor prints the directory relative to the crate.
 sed -i "s|directory = \".*\"|directory = \"$crate/$v\"|" target/solnix/.cargo/config.toml

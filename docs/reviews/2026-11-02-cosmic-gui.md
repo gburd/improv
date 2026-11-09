@@ -122,6 +122,35 @@ re-read them (the comment in `deny.toml` says so). Advisories:
 All are ignored there with reasons. `cargo deny check`:
 advisories, bans, licenses, sources ok.
 
+**libcosmic's `src/localize.rs` (2026-11-09).** cargo-deny reads the
+manifest, which says nothing about this: the one file of libcosmic that
+says `SPDX-License-Identifier: GPL-3.0-only` (the Fluent loader and `fl!`
+macro behind its context drawer's Close button and its calendar's month
+and day names, compiled unconditionally). Asked upstream,
+[pop-os/libcosmic#1500](https://github.com/pop-os/libcosmic/issues/1500).
+Until it is answered, release and distributed builds vendor libcosmic
+with that file replaced by `crates/gui_cosmic/release/localize.rs`, Improv's
+own MIT OR Apache-2.0 implementation, written clean-room from the
+module's interface (its callers, `i18n.toml`, `i18n/en/libcosmic.ftl`) and
+i18n-embed's documentation, without opening upstream's file.
+`release/vendor-libcosmic.sh` vendors, replaces and re-stamps the
+checksum, and refuses if the file is gone or its first line is no longer
+that GPL header. `release/license-scan.py` then reads every vendored
+file's SPDX headers: GPL and AGPL fail, and an LGPL file fails unless
+`release/license-allow.txt` lists it and it matches its upstream crate.
+`release/build.sh` and `ci/solnix-build.sh` build from the patched
+tree. Checked at this pin: 836 crates vendored, 789 files with SPDX
+headers, the 18 LGPL-2.1-or-later KDE protocol XMLs of
+`wayland-protocols-plasma` and `wayland-protocols-misc` (MIT crates; also
+in the root's lockfile), and no other copyleft header (the root adds
+nix's test kernel module, `GPL-2.0+ or MIT`, taken as MIT). Solnix's
+vendor fixups touch neither LGPL crate. The release build's libcosmic is
+compiled from our file: its dep-info names the vendored copy, whose
+sha256 is ours, and its rlib carries our file's log strings. improv-cosmic
+uses none of the widgets that call `fl!`, so neither file's code is left
+in the linked binary. Once upstream relicenses the file, the patch and
+the check are dropped.
+
 ## Platform matrix
 
 The same tree on each host: `work/cosmic` plus the hello window (one

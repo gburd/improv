@@ -243,3 +243,21 @@ before they were set is published by hand:
 
 By contributing you agree your work is dual-licensed under Apache-2.0 OR MIT
 (the recipient's choice), matching the project license.
+
+### Licences of dependencies
+
+Improv may link LGPL code unmodified. Any change we make to LGPL code is
+published upstream, under that licence, as a PR against that project. GPL
+and AGPL code is not allowed; any other copyleft licence needs the
+maintainer's decision first. `cargo deny check` checks the crates' declared
+licences. `crates/gui_cosmic/release/license-scan.py` checks the files'
+own `SPDX-License-Identifier` headers in the vendored crates: for the root
+`python3 crates/gui_cosmic/release/license-scan.py vendor . DIR`, for
+`crates/gui_cosmic` its release vendoring. The LGPL files
+we link are listed, with their exact licence, in
+`crates/gui_cosmic/release/license-allow.txt`. A listed file that differs
+from its upstream crate fails the scan unless its line ends
+`patched-upstream: <PR URL>`. One file is an exception: libcosmic's
+GPL-3.0-only `src/localize.rs` is replaced in release builds, not linked
+([pop-os/libcosmic#1500](https://github.com/pop-os/libcosmic/issues/1500);
+`crates/gui_cosmic/README.md`, "Release builds").

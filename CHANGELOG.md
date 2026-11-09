@@ -55,6 +55,22 @@ this project follows [Semantic Versioning](https://semver.org/).
   applications on an interactive desktop. Until that checklist is run
   (`docs/reviews/patches/window_clipboard-windows-formats.md`), these stay
   Windows release blockers.
+- **improv-cosmic release builds replace libcosmic's one GPL file.**
+  libcosmic's `src/localize.rs` (its translations loader) says
+  GPL-3.0-only, while the rest of libcosmic is MPL-2.0. Until
+  [pop-os/libcosmic#1500](https://github.com/pop-os/libcosmic/issues/1500)
+  is answered, a release build (`crates/gui_cosmic/release/build.sh`, and
+  the Solnix build) vendors libcosmic with that file replaced by Improv's
+  own MIT OR Apache-2.0 implementation. Developer builds are unchanged.
+- **A licence scan of the vendored crates' files.** The release vendoring
+  reads every vendored file's `SPDX-License-Identifier` headers
+  (`crates/gui_cosmic/release/license-scan.py`, for any workspace), and
+  fails on GPL or AGPL, and on an LGPL file that is
+  not listed or differs from its upstream crate. The policy, in
+  CONTRIBUTING.md ("Licences of dependencies"): Improv links LGPL code
+  unmodified, and any change we make to it is offered upstream under that
+  licence. Listed today: 18 LGPL-2.1-or-later KDE Wayland protocol
+  descriptions inside two MIT crates.
 
 ### Changed
 

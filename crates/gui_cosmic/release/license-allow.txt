@@ -1,0 +1,50 @@
+# Copyleft files the licence scan (license-scan.py) lets through, for every
+# vendored workspace it checks: crates/gui_cosmic and the root.
+#
+# The policy (CONTRIBUTING.md, "Licences of dependencies"): Improv may link
+# LGPL code unmodified; any change we make to LGPL code is published
+# upstream, under that licence, as a PR against that project. GPL and AGPL
+# are forbidden: the scan fails on them and they cannot be listed here. (The
+# one GPL file in the graph, libcosmic's src/localize.rs, is replaced
+# outright, not listed: vendor-libcosmic.sh, pop-os/libcosmic#1500.) Any
+# other copyleft licence needs a separate decision before it is listed.
+#
+# One line per file: `<crate>@<version>/<path> <SPDX expression>`, the
+# expression exactly as the file's header has it, so a relicensed or new
+# file, or a version bump, fails until a human re-reads it. A listed file
+# that differs from its upstream crate (the checksum cargo vendor recorded)
+# fails too, unless the line ends `patched-upstream: <PR URL>`.
+#
+# Reviewed by: the lead, 2026-11-09; the maintainer approved LGPL
+# dependencies under the policy above.
+
+# ---- LGPL, allowed unmodified ------------------------------------------
+
+# KDE Wayland protocol descriptions (XML), LGPL-2.1-or-later, inside an MIT
+# crate (license = "MIT"); its wayland_protocol! macro generates bindings
+# from them at build time. Via pop-os winit-wayland (KWin blur and friends).
+wayland-protocols-plasma@0.3.12/plasma-wayland-protocols/src/protocols/appmenu.xml LGPL-2.1-or-later
+wayland-protocols-plasma@0.3.12/plasma-wayland-protocols/src/protocols/blur.xml LGPL-2.1-or-later
+wayland-protocols-plasma@0.3.12/plasma-wayland-protocols/src/protocols/contrast.xml LGPL-2.1-or-later
+wayland-protocols-plasma@0.3.12/plasma-wayland-protocols/src/protocols/dpms.xml LGPL-2.1-or-later
+wayland-protocols-plasma@0.3.12/plasma-wayland-protocols/src/protocols/fake-input.xml LGPL-2.1-or-later
+wayland-protocols-plasma@0.3.12/plasma-wayland-protocols/src/protocols/idle.xml LGPL-2.1-or-later
+wayland-protocols-plasma@0.3.12/plasma-wayland-protocols/src/protocols/kde-lockscreen-overlay-v1.xml LGPL-2.1-or-later
+wayland-protocols-plasma@0.3.12/plasma-wayland-protocols/src/protocols/keystate.xml LGPL-2.1-or-later
+wayland-protocols-plasma@0.3.12/plasma-wayland-protocols/src/protocols/org-kde-plasma-virtual-desktop.xml LGPL-2.1-or-later
+wayland-protocols-plasma@0.3.12/plasma-wayland-protocols/src/protocols/plasma-shell.xml LGPL-2.1-or-later
+wayland-protocols-plasma@0.3.12/plasma-wayland-protocols/src/protocols/plasma-window-management.xml LGPL-2.1-or-later
+wayland-protocols-plasma@0.3.12/plasma-wayland-protocols/src/protocols/remote-access.xml LGPL-2.1-or-later
+wayland-protocols-plasma@0.3.12/plasma-wayland-protocols/src/protocols/server-decoration-palette.xml LGPL-2.1-or-later
+wayland-protocols-plasma@0.3.12/plasma-wayland-protocols/src/protocols/server-decoration.xml LGPL-2.1-or-later
+wayland-protocols-plasma@0.3.12/plasma-wayland-protocols/src/protocols/shadow.xml LGPL-2.1-or-later
+wayland-protocols-plasma@0.3.12/plasma-wayland-protocols/src/protocols/slide.xml LGPL-2.1-or-later
+wayland-protocols-plasma@0.3.12/plasma-wayland-protocols/src/protocols/zkde-screencast-unstable-v1.xml LGPL-2.1-or-later
+
+# The same, for KDE's server-decoration protocol, in an MIT crate. Via
+# smithay-client-toolkit.
+wayland-protocols-misc@0.3.12/protocols/server-decoration.xml LGPL-2.1-or-later
+
+# ---- Anything else ------------------------------------------------------
+# GPL and AGPL: forbidden. Any other copyleft licence: not accepted here
+# (license-scan.py refuses the line) until the maintainer decides on it.

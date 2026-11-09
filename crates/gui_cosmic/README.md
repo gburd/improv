@@ -48,6 +48,35 @@ lockfile diff. Then, before committing the new `Cargo.lock`:
    yet? then turn `a11y` on for Windows);
 4. record the new commit and anything that changed in the review note.
 
+## Release builds
+
+libcosmic is MPL-2.0, except one file: `src/localize.rs` (its Fluent loader
+and `fl!` macro) says `SPDX-License-Identifier: GPL-3.0-only`, and it is
+always compiled. Improv is MIT OR Apache-2.0, so until upstream answers
+[pop-os/libcosmic#1500](https://github.com/pop-os/libcosmic/issues/1500),
+**every release or distributed build replaces that file** with Improv's own
+implementation, `release/localize.rs` (MIT OR Apache-2.0, written from the
+module's interface and i18n-embed's documentation, without reading
+upstream's file). Developer builds (`cargo build`, `ci/gui_cosmic.sh`'s
+tests) use upstream as is.
+
+```sh
+release/build.sh                # vendor, patch, scan, then cargo build --release
+release/build.sh test           # the tests, over the same patched tree
+release/vendor-libcosmic.sh DIR # vendor + patch + scan only; prints the config
+```
+
+`vendor-libcosmic.sh` runs `cargo vendor --locked`, replaces the file,
+re-stamps its checksum, and fails if the file is gone or its first line is
+no longer that GPL header (a bump that moves or relicenses it needs a
+human look). Then `license-scan.py` reads every vendored file's SPDX
+headers: GPL and AGPL fail, and so does an LGPL file that is not listed in
+`release/license-allow.txt` or differs from its upstream crate (the
+policy: CONTRIBUTING.md, "Licences of dependencies").
+`ci/solnix-build.sh` applies the same patch and scan after Solnix's
+fixups. Once upstream relicenses the file, the patch and this check are
+dropped.
+
 ## Windows: known limitation and release blockers
 
 It builds and starts on Windows (arm64 here; x64 in CI). At this pin:
