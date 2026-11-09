@@ -298,6 +298,7 @@ fn covers(w: &BTreeMap<u32, Vec<u32>>, at: &At) -> bool {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use improv_client::wire::{CategoryOut, Cell, ItemOut, MeasureOut};

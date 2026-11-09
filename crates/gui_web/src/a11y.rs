@@ -321,6 +321,7 @@ pub fn node_of(dom: &str) -> Option<u64> {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use accesskit::{TreeId, TreeInfo};
@@ -727,6 +728,19 @@ mod tests {
         assert_eq!(t.kids[&1], vec![2, 2]);
         assert!(!t.els.contains_key(&3), "unreachable");
         assert_eq!(t.focus, Some(1));
+        // The same tree with no root: no root operation, all dropped.
+        let none = Tree::default();
+        let ops = t.diff(&none);
+        assert!(!ops.iter().any(|o| matches!(o, Op::Root(_))), "{ops:?}");
+        assert_eq!(ops.iter().filter(|o| matches!(o, Op::Drop(_))).count(), 2);
+        // A button's value (none of egui's say one; a slider would) is
+        // described, not shown.
+        let mut b = Node::new(Role::Button);
+        b.set_label("Zoom");
+        b.set_value("150%");
+        let el = element(&b, &HashMap::new());
+        assert_eq!(attr(&el, "aria-description"), Some("150%"));
+        assert_eq!(el.text, None);
         // Labelled by nodes with no words: no name.
         let mut l = Node::new(Role::TextInput);
         l.push_labelled_by(NodeId(3));

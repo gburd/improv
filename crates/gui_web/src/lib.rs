@@ -12,6 +12,11 @@
 //! accessibility tree's DOM model), so the workspace builds and tests them
 //! on every platform.
 
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
+// The attribute is only used inside #[cfg(test)] modules, so non-test
+// coverage builds would otherwise warn that the feature is unused.
+#![cfg_attr(coverage_nightly, allow(unused_features))]
+
 pub mod a11y;
 pub mod layout;
 
