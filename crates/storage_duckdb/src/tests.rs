@@ -593,6 +593,9 @@ fn canonical_paths_share_one_instance() {
             .unwrap()
             .join("x.duckdb")
     );
+    // Windows resolves `..` by the text before it looks at the disk, so
+    // this path is the existing root there.
+    #[cfg(not(windows))]
     assert!(
         canonical(Path::new("/nonexistent-improv/..")).is_err(),
         "no file name"
