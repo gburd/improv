@@ -241,6 +241,55 @@ impl Cache {
     }
 }
 
+/// The keyboard cursor in a grid of `rows` x `cols` cells: where `key`
+/// moves it from `at` (row, column), or `None` when the key does not move
+/// it. Home and End go to the row's ends; with `ctrl`, to the grid's
+/// corners. A cursor left outside a smaller grid is brought back in.
+pub fn step(
+    at: (usize, usize),
+    key: Step,
+    ctrl: bool,
+    rows: usize,
+    cols: usize,
+) -> Option<(usize, usize)> {
+    if rows == 0 || cols == 0 {
+        return None;
+    }
+    let (r, c) = (at.0.min(rows - 1), at.1.min(cols - 1));
+    Some(match key {
+        Step::Up => (r.saturating_sub(1), c),
+        Step::Down => ((r + 1).min(rows - 1), c),
+        Step::Left => (r, c.saturating_sub(1)),
+        Step::Right => (r, (c + 1).min(cols - 1)),
+        Step::Home if ctrl => (0, 0),
+        Step::End if ctrl => (rows - 1, cols - 1),
+        Step::Home => (r, 0),
+        Step::End => (r, cols - 1),
+    })
+}
+
+/// A key that moves a grid's cursor (egui-free, so [`step`] tests natively).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Step {
+    Up,
+    Down,
+    Left,
+    Right,
+    Home,
+    End,
+}
+
+/// What a screen reader hears for a cell: its row and column headers, then
+/// its value (as on the desktop, H2), or "empty".
+pub fn cell_name(row: &str, col: &str, text: &str) -> String {
+    let place: Vec<&str> = [row, col].into_iter().filter(|s| !s.is_empty()).collect();
+    let v = if text.is_empty() { "empty" } else { text };
+    match place.is_empty() {
+        true => v.to_owned(),
+        false => format!("{}: {v}", place.join(", ")),
+    }
+}
+
 /// Whether a window (items per category; a category left out: any) holds
 /// the cell at `at`.
 fn covers(w: &BTreeMap<u32, Vec<u32>>, at: &At) -> bool {
@@ -364,6 +413,35 @@ mod tests {
         let mut empty = p.clone();
         empty.axis_order.clear();
         assert_eq!(Sheet::from_placement(&s, &empty), Sheet::new(&s, 100));
+    }
+
+    #[test]
+    fn the_cursor_moves_and_stays_in_the_grid() {
+        use Step::*;
+        assert_eq!(step((0, 0), Down, false, 3, 2), Some((1, 0)));
+        assert_eq!(step((0, 0), Up, false, 3, 2), Some((0, 0)), "the top edge");
+        assert_eq!(step((2, 1), Down, false, 3, 2), Some((2, 1)), "the bottom");
+        assert_eq!(step((1, 0), Right, false, 3, 2), Some((1, 1)));
+        assert_eq!(step((1, 1), Right, false, 3, 2), Some((1, 1)));
+        assert_eq!(step((1, 1), Left, false, 3, 2), Some((1, 0)));
+        assert_eq!(step((1, 0), Left, false, 3, 2), Some((1, 0)));
+        assert_eq!(step((1, 0), End, false, 3, 2), Some((1, 1)));
+        assert_eq!(step((1, 1), Home, false, 3, 2), Some((1, 0)));
+        assert_eq!(step((1, 1), Home, true, 3, 2), Some((0, 0)));
+        assert_eq!(step((0, 0), End, true, 3, 2), Some((2, 1)));
+        // A pivot shrank the grid: the cursor comes back inside.
+        assert_eq!(step((9, 9), Up, false, 3, 2), Some((1, 1)));
+        assert_eq!(step((0, 0), Down, false, 0, 2), None, "no rows");
+        assert_eq!(step((0, 0), Down, false, 2, 0), None, "no columns");
+    }
+
+    #[test]
+    fn a_cell_is_named_by_its_headers_and_value() {
+        assert_eq!(cell_name("2025Q1", "Widget", "100"), "2025Q1, Widget: 100");
+        assert_eq!(cell_name("2025Q1", "Widget", ""), "2025Q1, Widget: empty");
+        // A one-dimensional measure has no column header.
+        assert_eq!(cell_name("Widget", "", "12"), "Widget: 12");
+        assert_eq!(cell_name("", "", "7"), "7");
     }
 
     #[test]

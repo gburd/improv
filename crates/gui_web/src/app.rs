@@ -45,6 +45,17 @@ pub struct Probe {
     pub live: bool,
 }
 
+/// What a grid's frame asks of its window: a cell's edit to commit (an
+/// empty coordinate: cancelled), an edit to start (its text, and whether
+/// to select it), and where the cursor went (and whether it takes the
+/// focus next frame).
+struct GridOut<'a> {
+    commit: &'a mut Option<(improv_client::wire::At, String)>,
+    start_edit: &'a mut Option<(improv_client::wire::At, String, bool)>,
+    cursor: &'a mut Option<(usize, usize)>,
+    focus: &'a mut bool,
+}
+
 /// What a sent request was for, so its reply lands in the right place.
 enum Pending {
     Structure,
@@ -68,6 +79,10 @@ struct Win {
     open: bool,
     /// The cell being edited, its text, and whether to select it all.
     editing: Option<(improv_client::wire::At, String, bool)>,
+    /// The keyboard cursor (row, column), and whether it takes the focus
+    /// back next frame (an edit ended).
+    cursor: (usize, usize),
+    refocus: bool,
 }
 
 pub struct WebApp<S: ModelService> {
@@ -309,6 +324,8 @@ impl<S: ModelService> WebApp<S> {
             rect: Rect::from_min_size(at, vec2(w, 200.0)),
             open: true,
             editing: None,
+            cursor: (0, 0),
+            refocus: false,
         });
         self.next_uid += 1;
     }
@@ -666,7 +683,9 @@ impl<S: ModelService> WebApp<S> {
         let mut moves: Vec<(u32, Axis)> = Vec::new();
         let mut page_pick: Option<(u32, u32)> = None;
         let mut commit: Option<(improv_client::wire::At, String)> = None;
-        let mut start_edit: Option<(improv_client::wire::At, String)> = None;
+        let mut start_edit: Option<(improv_client::wire::At, String, bool)> = None;
+        let mut cursor = None;
+        let mut focus_cursor = false;
         let mut formula_commit: Option<(u32, String)> = None;
         let mut new_commit: Option<String> = None;
         let id = crate::nxwin::NxWindow::new(("ws", uid), "").id();
@@ -694,7 +713,13 @@ impl<S: ModelService> WebApp<S> {
                         });
                 }
                 self.gutters(ui, i, &mut moves, &mut page_pick, probe);
-                self.grid(ui, i, &m, probe, &mut commit, &mut start_edit);
+                let mut out = GridOut {
+                    commit: &mut commit,
+                    start_edit: &mut start_edit,
+                    cursor: &mut cursor,
+                    focus: &mut focus_cursor,
+                };
+                self.grid(ui, i, &m, probe, &mut out);
             });
         if shown.is_some() {
             if let Some(r) = crate::nxwin::stored_rect(ctx, id) {
@@ -715,11 +740,17 @@ impl<S: ModelService> WebApp<S> {
         if let Some((c, item)) = page_pick {
             w.sheet.page.insert(c, item);
         }
-        if let Some((at, text)) = start_edit {
-            w.editing = Some((at, text, true));
+        if let Some(c) = cursor {
+            w.cursor = c;
+        }
+        w.refocus = focus_cursor;
+        if let Some((at, text, select)) = start_edit {
+            w.editing = Some((at, text, select));
         }
         if let Some((at, text)) = commit {
             w.editing = None;
+            // The cell has the keyboard again.
+            w.refocus = true;
             self.commit_cell(&m, at, &text);
         }
         if let Some((id, text)) = formula_commit {
@@ -917,15 +948,18 @@ impl<S: ModelService> WebApp<S> {
         resp.rect
     }
 
-    /// The grid: column headers, row headers, and the cells on this page.
+    /// The grid: column headers, row headers, and the cells on this page,
+    /// marked up for a screen reader as a grid (rows of row and column
+    /// headers and cells, with their indices). One cell, the cursor, is a
+    /// Tab stop: the arrows, Home and End move it, Enter or typing edits
+    /// it, Enter commits and Esc cancels.
     fn grid(
         &self,
         ui: &mut egui::Ui,
         i: usize,
         m: &improv_client::wire::MeasureOut,
         probe: &mut Probe,
-        commit: &mut Option<(improv_client::wire::At, String)>,
-        start_edit: &mut Option<(improv_client::wire::At, String)>,
+        out: &mut GridOut,
     ) {
         let w = &self.wins[i];
         let st = &self.structure;
@@ -947,6 +981,10 @@ impl<S: ModelService> WebApp<S> {
             ROW_H * (rows.len() + 1) as f32,
         );
         let font = FontId::proportional(12.0);
+        let cursor = (
+            w.cursor.0.min(rows.len().saturating_sub(1)),
+            w.cursor.1.min(cols.len().saturating_sub(1)),
+        );
         // No taller than what the formula pane leaves (egui's default
         // minimum would run it into the pane).
         egui::ScrollArea::both()
@@ -957,6 +995,39 @@ impl<S: ModelService> WebApp<S> {
             .show(ui, |ui| {
                 crate::theme::content(ui);
                 let (area, _) = ui.allocate_exact_size(size, Sense::hover());
+                // The grid's accessibility nodes: a Ui per grid and row
+                // (their nodes hold the headers' and cells'); nothing drawn.
+                let mut grid = ui.new_child(
+                    egui::UiBuilder::new()
+                        .id_salt(("axgrid", w.uid))
+                        .max_rect(area)
+                        .accessibility_role(egui::accesskit::Role::Grid)
+                        .accessibility_label(&m.name),
+                );
+                grid.ctx().accesskit_node_builder(grid.unique_id(), |n| {
+                    n.set_row_count(rows.len() + 1);
+                    n.set_column_count(cols.len() + 1);
+                });
+                let row_ui = |grid: &mut egui::Ui, r: usize| {
+                    let rui = grid.new_child(
+                        egui::UiBuilder::new()
+                            .id_salt(("axrow", r))
+                            .max_rect(area)
+                            .accessibility_role(egui::accesskit::Role::Row),
+                    );
+                    rui.ctx()
+                        .accesskit_node_builder(rui.unique_id(), |n| n.set_row_index(r));
+                    rui
+                };
+                // A header: hover-only, named, at its column.
+                let ax_head = |ui: &egui::Ui, r: Rect, id: egui::Id, role, name: &str, col| {
+                    let h = ui.interact(r, id, Sense::hover());
+                    ui.ctx().accesskit_node_builder(h.id, |n| {
+                        n.set_role(role);
+                        n.set_label(name);
+                        n.set_column_index(col);
+                    });
+                };
                 let clip = ui.clip_rect();
                 let p = ui.painter().clone();
                 let cell = |r: usize, c: usize| {
@@ -978,14 +1049,48 @@ impl<S: ModelService> WebApp<S> {
                     p.text(pos, al, t, font.clone(), BLACK);
                 };
                 head(cell(0, 0), "", true);
-                for (ci, col) in cols.iter().enumerate() {
-                    head(cell(0, ci + 1), &label(col), false);
+                let col_names: Vec<String> = cols.iter().map(|c| label(c)).collect();
+                let top = row_ui(&mut grid, 0);
+                let ch = egui::accesskit::Role::ColumnHeader;
+                ax_head(&top, cell(0, 0), top.unique_id().with(0), ch, "", 0);
+                for (ci, col) in col_names.iter().enumerate() {
+                    head(cell(0, ci + 1), col, false);
+                    ax_head(
+                        &top,
+                        cell(0, ci + 1),
+                        top.unique_id().with(ci + 1),
+                        ch,
+                        col,
+                        ci + 1,
+                    );
                 }
+                drop(top);
                 for (ri, row) in rows.iter().enumerate() {
-                    head(cell(ri + 1, 0), &label(row), true);
+                    let row_name = label(row);
+                    head(cell(ri + 1, 0), &row_name, true);
+                    // Rows scrolled off have no nodes (the grid's row count
+                    // says how many there are), except the cursor's.
+                    if !clip.intersects(cell(ri + 1, 0).union(cell(ri + 1, cols.len())))
+                        && ri != cursor.0
+                    {
+                        continue;
+                    }
+                    let mut ui = row_ui(&mut grid, ri + 1);
+                    let rh = egui::accesskit::Role::RowHeader;
+                    ax_head(
+                        &ui,
+                        cell(ri + 1, 0),
+                        ui.unique_id().with(0),
+                        rh,
+                        &row_name,
+                        0,
+                    );
                     for (ci, col) in cols.iter().enumerate() {
                         let r = cell(ri + 1, ci + 1);
-                        if !clip.intersects(r) {
+                        let mine = (ri, ci) == cursor;
+                        // The cursor cell stays, scrolled off or not: it is
+                        // the grid's Tab stop.
+                        if !clip.intersects(r) && !mine {
                             continue;
                         }
                         let at = w.sheet.at(st, row, col);
@@ -1010,12 +1115,16 @@ impl<S: ModelService> WebApp<S> {
                                 .ctx()
                                 .data_mut(|d| d.get_temp(key))
                                 .unwrap_or_else(|| seed.clone());
-                            let resp = ui.put(
-                                r,
-                                egui::TextEdit::singleline(&mut buf)
-                                    .id(id)
-                                    .align(egui::Align2::RIGHT_CENTER),
-                            );
+                            let resp =
+                                ui.put(
+                                    r,
+                                    egui::TextEdit::singleline(&mut buf)
+                                        .id(id)
+                                        .align(egui::Align2::RIGHT_CENTER),
+                                )
+                                .accessible_name(
+                                    crate::layout::cell_name(&row_name, &col_names[ci], "editing"),
+                                );
                             if !resp.has_focus() {
                                 resp.request_focus();
                             }
@@ -1042,7 +1151,7 @@ impl<S: ModelService> WebApp<S> {
                                     d.remove::<String>(key);
                                     d.remove::<bool>(key.with("sel"));
                                 });
-                                *commit = Some(if enter {
+                                *out.commit = Some(if enter {
                                     (at.clone(), buf)
                                 } else {
                                     (Vec::new(), String::new())
@@ -1066,14 +1175,137 @@ impl<S: ModelService> WebApp<S> {
                             font.clone(),
                             BLACK,
                         );
-                        let resp =
-                            ui.interact(r, egui::Id::unique(("cell", w.uid, &at)), Sense::click());
-                        if m.editable && resp.double_clicked() {
-                            *start_edit = Some((at, typed));
+                        // Only the cursor cell is a Tab stop; a screen
+                        // reader still reads every cell in the grid.
+                        let sense = match mine {
+                            true => Sense::click(),
+                            false => Sense::CLICK,
+                        };
+                        let resp = ui.interact(r, egui::Id::unique(("cell", w.uid, &at)), sense);
+                        let name = crate::layout::cell_name(&row_name, &col_names[ci], &text);
+                        resp.widget_info(|| {
+                            egui::WidgetInfo::labeled(egui::Role::GridCell, true, &name)
+                        });
+                        ui.ctx().accesskit_node_builder(resp.id, |n| {
+                            n.set_column_index(ci + 1);
+                            // Every cell takes a screen reader's focus (the
+                            // request moves the cursor there).
+                            n.add_action(egui::accesskit::Action::Focus);
+                            if !m.editable {
+                                n.set_read_only();
+                            }
+                        });
+                        let (sr_click, sr_focus) = ui.input(|i| {
+                            use egui::accesskit::Action;
+                            (
+                                i.has_accesskit_action_request(resp.id, Action::Click),
+                                i.has_accesskit_action_request(resp.id, Action::Focus),
+                            )
+                        });
+                        if resp.clicked() || resp.has_focus() {
+                            *out.cursor = Some((ri, ci));
+                        }
+                        if sr_focus && !mine {
+                            *out.cursor = Some((ri, ci));
+                            *out.focus = true;
+                        }
+                        if mine && w.refocus {
+                            resp.request_focus();
+                            resp.scroll_to_me(None);
+                        }
+                        if resp.has_focus() {
+                            if resp.gained_focus() {
+                                // Another frame, so the cell holds the
+                                // arrows (its lock filter) before the next key.
+                                ui.ctx().request_repaint();
+                            }
+                            // The cursor shows where the keyboard is.
+                            p.rect_stroke(r, 0.0, Stroke::new(2.0, BLACK), StrokeKind::Inside);
+                            let cell_id = |r: usize, c: usize| {
+                                let at = w.sheet.at(st, &rows[r], &cols[c]);
+                                egui::Id::unique(("cell", w.uid, &at))
+                            };
+                            self.cell_keys(
+                                &ui,
+                                &resp,
+                                (ri, ci),
+                                (rows.len(), cols.len()),
+                                cell_id,
+                                out,
+                            );
+                            if m.editable {
+                                // Enter edits the value; typing replaces it.
+                                let (enter, typed_text) = ui.input(|i| {
+                                    let t: String = i
+                                        .events
+                                        .iter()
+                                        .filter_map(|e| match e {
+                                            egui::Event::Text(t) => Some(t.as_str()),
+                                            _ => None,
+                                        })
+                                        .collect();
+                                    (i.key_pressed(egui::Key::Enter), t)
+                                });
+                                if enter {
+                                    *out.start_edit = Some((at.clone(), typed.clone(), true));
+                                } else if !typed_text.trim().is_empty() {
+                                    *out.start_edit = Some((at.clone(), typed_text, false));
+                                }
+                            }
+                        }
+                        if m.editable && (resp.double_clicked() || sr_click) {
+                            *out.start_edit = Some((at, typed, true));
                         }
                     }
                 }
             });
+    }
+
+    /// Move the cursor with the arrows, Home and End.
+    fn cell_keys(
+        &self,
+        ui: &egui::Ui,
+        resp: &egui::Response,
+        at: (usize, usize),
+        size: (usize, usize),
+        cell_id: impl Fn(usize, usize) -> egui::Id,
+        out: &mut GridOut,
+    ) {
+        use crate::layout::Step;
+        // The cell keeps the arrows (egui would move the focus by them).
+        ui.memory_mut(|m| {
+            m.set_focus_lock_filter(
+                resp.id,
+                egui::EventFilter {
+                    horizontal_arrows: true,
+                    vertical_arrows: true,
+                    ..Default::default()
+                },
+            );
+        });
+        let keys = [
+            (egui::Key::ArrowUp, Step::Up),
+            (egui::Key::ArrowDown, Step::Down),
+            (egui::Key::ArrowLeft, Step::Left),
+            (egui::Key::ArrowRight, Step::Right),
+            (egui::Key::Home, Step::Home),
+            (egui::Key::End, Step::End),
+        ];
+        let pressed = ui.input(|i| {
+            keys.iter()
+                .find(|(k, _)| i.key_pressed(*k))
+                .map(|(_, s)| (*s, i.modifiers.command))
+        });
+        if let Some(to) = pressed
+            .and_then(|(k, ctrl)| crate::layout::step(at, k, ctrl, size.0, size.1))
+            .filter(|to| *to != at)
+        {
+            *out.cursor = Some(to);
+            // Straight to the new cell, so no frame has no focus (a screen
+            // reader would announce the canvas); next frame scrolls to it.
+            ui.memory_mut(|m| m.request_focus(cell_id(to.0, to.1)));
+            *out.focus = true;
+        }
     }
 
     fn commit_cell(
