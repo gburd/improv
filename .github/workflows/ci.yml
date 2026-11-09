@@ -71,6 +71,12 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: improv
+      # libduckdb-sys unpacks its bundled sources once per target dir, into
+      # target/duckdb-sources/<key>/, and fails ("Directory not empty")
+      # when the cache restored a partial copy without its COMPLETE marker.
+      - name: Drop cached DuckDB sources
+        shell: bash
+        run: find improv -path '*/target/duckdb-sources' -prune -type d -exec rm -r {} + 2>/dev/null || true
       # Lint only the Improv workspace crates; the vendored Mentat dep emits its
       # own (upstream) warnings which must not fail our -D warnings gate.
       - name: Clippy (workspace crates)
@@ -166,6 +172,12 @@ jobs:
         with:
           workspaces: improv
           key: ${{ matrix.os }}-${{ matrix.features }}
+      # libduckdb-sys unpacks its bundled sources once per target dir, into
+      # target/duckdb-sources/<key>/, and fails ("Directory not empty")
+      # when the cache restored a partial copy without its COMPLETE marker.
+      - name: Drop cached DuckDB sources
+        shell: bash
+        run: find improv -path '*/target/duckdb-sources' -prune -type d -exec rm -r {} + 2>/dev/null || true
       - name: Build
         working-directory: improv
         run: cargo build --workspace ${{ matrix.features }}
@@ -268,6 +280,12 @@ jobs:
         with:
           workspaces: improv
           key: coverage
+      # libduckdb-sys unpacks its bundled sources once per target dir, into
+      # target/duckdb-sources/<key>/, and fails ("Directory not empty")
+      # when the cache restored a partial copy without its COMPLETE marker.
+      - name: Drop cached DuckDB sources
+        shell: bash
+        run: find improv -path '*/target/duckdb-sources' -prune -type d -exec rm -r {} + 2>/dev/null || true
       - name: Coverage gate
         working-directory: improv
         run: scripts/coverage.sh --html 90
@@ -358,6 +376,12 @@ jobs:
             improv/crates/duckdb_improv
             improv
           key: duckdb
+      # libduckdb-sys unpacks its bundled sources once per target dir, into
+      # target/duckdb-sources/<key>/, and fails ("Directory not empty")
+      # when the cache restored a partial copy without its COMPLETE marker.
+      - name: Drop cached DuckDB sources
+        shell: bash
+        run: find improv -path '*/target/duckdb-sources' -prune -type d -exec rm -r {} + 2>/dev/null || true
       - name: Install build deps
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends python3-venv unzip
       - name: duckdb_improv
@@ -434,6 +458,12 @@ jobs:
             improv/crates/gui_cosmic
             improv
           key: cosmic-shot
+      # libduckdb-sys unpacks its bundled sources once per target dir, into
+      # target/duckdb-sources/<key>/, and fails ("Directory not empty")
+      # when the cache restored a partial copy without its COMPLETE marker.
+      - name: Drop cached DuckDB sources
+        shell: bash
+        run: find improv -path '*/target/duckdb-sources' -prune -type d -exec rm -r {} + 2>/dev/null || true
       - name: Screenshot regression
         working-directory: improv
         run: scripts/cosmic-shot-check.sh
@@ -470,6 +500,12 @@ jobs:
         with:
           workspaces: improv
           key: gui-shot
+      # libduckdb-sys unpacks its bundled sources once per target dir, into
+      # target/duckdb-sources/<key>/, and fails ("Directory not empty")
+      # when the cache restored a partial copy without its COMPLETE marker.
+      - name: Drop cached DuckDB sources
+        shell: bash
+        run: find improv -path '*/target/duckdb-sources' -prune -type d -exec rm -r {} + 2>/dev/null || true
       - name: Screenshot regression
         working-directory: improv
         run: scripts/gui-shot-check.sh
@@ -513,6 +549,12 @@ jobs:
         with:
           workspaces: improv
           key: web-e2e
+      # libduckdb-sys unpacks its bundled sources once per target dir, into
+      # target/duckdb-sources/<key>/, and fails ("Directory not empty")
+      # when the cache restored a partial copy without its COMPLETE marker.
+      - name: Drop cached DuckDB sources
+        shell: bash
+        run: find improv -path '*/target/duckdb-sources' -prune -type d -exec rm -r {} + 2>/dev/null || true
       - name: The wasm target and wasm-bindgen at Cargo.lock's version
         working-directory: improv
         run: |

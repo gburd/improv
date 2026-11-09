@@ -50,6 +50,12 @@ jobs:
         with:
           workspaces: improv
           key: release-${{ matrix.target }}
+      # libduckdb-sys unpacks its bundled sources once per target dir, into
+      # target/duckdb-sources/<key>/, and fails ("Directory not empty")
+      # when the cache restored a partial copy without its COMPLETE marker.
+      - name: Drop cached DuckDB sources
+        shell: bash
+        run: find improv -path '*/target/duckdb-sources' -prune -type d -exec rm -r {} + 2>/dev/null || true
       - name: Test (release)
         if: matrix.test
         working-directory: improv

@@ -72,6 +72,12 @@ jobs:
             improv
             improv/crates/pg_improv
           key: scale-gate
+      # libduckdb-sys unpacks its bundled sources once per target dir, into
+      # target/duckdb-sources/<key>/, and fails ("Directory not empty")
+      # when the cache restored a partial copy without its COMPLETE marker.
+      - name: Drop cached DuckDB sources
+        shell: bash
+        run: find improv -path '*/target/duckdb-sources' -prune -type d -exec rm -r {} + 2>/dev/null || true
       - name: Postgres 17, pg_improv and the probes (release builds)
         working-directory: improv
         run: |
