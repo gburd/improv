@@ -51,9 +51,11 @@ stages 1-4 in 0.13).
   was 30x slower with one): a one-cell save scans the model's cells, 14 ms
   at 1M. Not yet: desktop GUIs/TUI on `duckdb:` (use the web GUI), one
   model per server.
-- **NEXT:** stages 5 and 6 (agent `live`, branch `work/live`), web
-  accessibility (`work/a11y`), COSMIC Windows clipboard and DnD
-  (`work/cwin`).
+- **NEXT:** stages 5 and 6 (agent `live`, branch `work/live`), COSMIC
+  Windows clipboard and DnD (`work/cwin`). Web accessibility is on main
+  (`0a11316`..`1024736`, see the I2 row and
+  `docs/reviews/2026-11-08-web-accessibility.md`); left: a run with a
+  real screen reader.
 - **Rule for every front end:** a client under a read policy never
   computes derived values itself; it reads them, and what-ifs, from the
   authority. Hidden is absent. Versions are opaque. (`improv_client`'s
