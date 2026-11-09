@@ -614,7 +614,9 @@ impl<S: ModelService> WebApp<S> {
             &views,
             |c| match c {
                 Command::Undo | Command::Redo | Command::ModelBrowser => true,
-                Command::Keys | Command::Quit | Command::Hide => true,
+                Command::Keys => true,
+                // A browser tab is not a window the page may close or hide.
+                Command::Quit | Command::Hide => cfg!(not(target_arch = "wasm32")),
                 Command::OpenView(_) | Command::FunctionHelp | Command::UserGuide => true,
                 Command::AddCategory => structure,
                 Command::AddInputMeasure => add_measure,
