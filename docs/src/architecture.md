@@ -13,7 +13,8 @@ the ones below it.
 | `nl_formula` | `improv_nl_formula` | Controlled natural language ⇄ formula translation. |
 | `storage_mentat` | `improv_storage_mentat` | Model ⇄ datoms in an embedded, SQLite-backed Mentat file. |
 | `storage_pg` | `improv_storage_pg` | Model ⇄ the `improv.*` catalog in Postgres, with bound measures read from and written to their fact tables. |
-| `store` | `improv_store` | `Store`: one store type over both backends, picked by `Store::open` from the target (path or `postgres://…?model=`). |
+| `storage_duckdb` | `improv_storage_duckdb` | Model ⇄ an `improv.*` catalog inside a DuckDB file, one writer per file ([The DuckDB store](./storage.md#the-duckdb-store)). |
+| `store` | `improv_store` | `Store`: one store type over every backend, picked by `Store::open` from the target (path, `postgres://…?model=` or `duckdb:FILE?model=`). |
 | `storage_sql` | `improv_storage_sql` | Import SQL query results into a model, export a measure to a table, refresh. SQLite, PostgreSQL, DuckDB. |
 | `storage_csv` | `improv_storage_csv` | Import a CSV/TSV file into a model; export a measure's cells (input or computed) to CSV/TSV. |
 | `data_source` | `improv_data_source` | The import bookkeeping shared by `storage_sql` and `storage_csv`: create categories and the measure, intern dimension values as items. |

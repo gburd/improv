@@ -1539,6 +1539,51 @@ fn list_a_postgres_model() {
     assert!(err(&["list", "postgres://u@localhost/d"]).contains("?model="));
 }
 
+/// The CLI builds, imports into, evaluates and sets policies on a model in
+/// a DuckDB file, through the same subcommands it uses for a Mentat file;
+/// a missing file is refused unless the command creates one.
+#[test]
+fn a_duckdb_hosted_model() {
+    let dir = scratch("duckdb");
+    let file = dir.join("plans.duckdb");
+    let t = format!("duckdb:{}?model=plan", file.display());
+    let d = t.as_str();
+    assert!(err(&["list", d]).contains("no model at"));
+    assert!(!file.exists(), "a read does not create the file");
+    ok(&["init", d]);
+    ok(&["add-category", d, "1", "Time"]);
+    ok(&["add-item", d, "10", "1", "Q1"]);
+    ok(&["add-item", d, "11", "1", "Q2"]);
+    ok(&["add-measure", d, "100", "Price", "number", "input", "Time"]);
+    ok(&["set", d, "100", "4", "--at", "Time=Q1"]);
+    ok(&["add-derived", d, "102", "Double", "Price * 2"]);
+    ok(&["save-view", d, "1", "Prices", "Price", "--rows", "Time"]);
+    let csv = dir.join("q.csv");
+    std::fs::write(&csv, "t,q\nQ1,3\nQ2,5\n").unwrap();
+    let csv = csv.to_str().unwrap();
+    ok(&["import-csv", d, csv, "101", "Qty", "q", "t:1:Time"]);
+    stdout_has(&ok(&["eval", d, "Double"]), "Double[Time=Q1] = 8");
+    let out = ok(&["list", d]);
+    for want in [
+        "  100 Price [input] Number",
+        "  1 Prices (measure Price, 1 matrices)",
+        "  101::{Time=Q2} = 5",
+    ] {
+        assert!(out.contains(want), "missing {want:?} in:\n{out}");
+    }
+    let pol = dir.join("p.cedar");
+    std::fs::write(&pol, "permit (principal, action, resource);").unwrap();
+    stdout_has(
+        &ok(&["policy", "set", d, pol.to_str().unwrap()]),
+        "(version 1)",
+    );
+    stdout_has(&ok(&["policy", "show", d]), "// version 1");
+    // Another model in the same file is its own.
+    let other = format!("duckdb:{}?model=other", file.display());
+    assert!(!ok(&["list", &other]).contains("Price"));
+    assert!(err(&["list", &format!("duckdb:{}", file.display())]).contains("?model="));
+}
+
 /// `IMPROV_LOCALE=de`: a formula typed with German names, decimal comma and
 /// `;` separators is stored canonically.
 #[test]

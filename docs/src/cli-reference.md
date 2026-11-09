@@ -29,7 +29,7 @@ Usage: improv init <db>
 
 | Argument | Description |
 | --- | --- |
-| `<db>` | The model store: a file, or postgres://USER@HOST/DB?model=NAME |
+| `<db>` | The model store: a file, postgres://USER@HOST/DB?model=NAME or duckdb:FILE?model=NAME |
 
 ### `improv add-category`
 
@@ -41,7 +41,7 @@ Usage: improv add-category <db> <id> <name>
 
 | Argument | Description |
 | --- | --- |
-| `<db>` | The model store: a file, or postgres://USER@HOST/DB?model=NAME |
+| `<db>` | The model store: a file, postgres://USER@HOST/DB?model=NAME or duckdb:FILE?model=NAME |
 | `<id>` | The category's numeric id |
 | `<name>` | The category's name |
 
@@ -57,7 +57,7 @@ Usage: improv add-item <db> <id> <category-id> <name>
 
 | Argument | Description |
 | --- | --- |
-| `<db>` | The model store: a file, or postgres://USER@HOST/DB?model=NAME |
+| `<db>` | The model store: a file, postgres://USER@HOST/DB?model=NAME or duckdb:FILE?model=NAME |
 | `<id>` | The item's numeric id |
 | `<category-id>` | The id of the item's category |
 | `<name>` | The item's name |
@@ -74,7 +74,7 @@ Usage: improv add-measure <db> <id> <name> <type> <input> [category]...
 
 | Argument | Description |
 | --- | --- |
-| `<db>` | The model store: a file, or postgres://USER@HOST/DB?model=NAME |
+| `<db>` | The model store: a file, postgres://USER@HOST/DB?model=NAME or duckdb:FILE?model=NAME |
 | `<id>` | The measure's numeric id |
 | `<name>` | The measure's name |
 | `<type>` | number, boolean or text |
@@ -93,7 +93,7 @@ Usage: improv add-derived <db> <id> <name> <formula>
 
 | Argument | Description |
 | --- | --- |
-| `<db>` | The model store: a file, or postgres://USER@HOST/DB?model=NAME |
+| `<db>` | The model store: a file, postgres://USER@HOST/DB?model=NAME or duckdb:FILE?model=NAME |
 | `<id>` | The measure's numeric id |
 | `<name>` | The measure's name |
 | `<formula>` | The formula text (in IMPROV_LOCALE's spelling) |
@@ -110,7 +110,7 @@ Usage: improv define [OPTIONS] <db> <id> <definition>
 
 | Argument | Description |
 | --- | --- |
-| `<db>` | The model store: a file, or postgres://USER@HOST/DB?model=NAME |
+| `<db>` | The model store: a file, postgres://USER@HOST/DB?model=NAME or duckdb:FILE?model=NAME |
 | `<id>` | The measure's (or LAMBDA's) numeric id |
 | `<definition>` | The definition: Target = formula, CALL(...) or LAMBDA(...) |
 | `--refresh` `<policy>` | When serve-refresh re-runs it: manual, on-load or interval:SECS (default: `manual`) |
@@ -127,7 +127,7 @@ Usage: improv register-ext <db> <name> <arity> <python-body>
 
 | Argument | Description |
 | --- | --- |
-| `<db>` | The model store: a file, or postgres://USER@HOST/DB?model=NAME |
+| `<db>` | The model store: a file, postgres://USER@HOST/DB?model=NAME or duckdb:FILE?model=NAME |
 | `<name>` | The function's name, as CALL(...) names it |
 | `<arity>` | How many arguments it takes |
 | `<python-body>` | The Python body |
@@ -144,7 +144,7 @@ Usage: improv refresh-ext <db> <measure>
 
 | Argument | Description |
 | --- | --- |
-| `<db>` | The model store: a file, or postgres://USER@HOST/DB?model=NAME |
+| `<db>` | The model store: a file, postgres://USER@HOST/DB?model=NAME or duckdb:FILE?model=NAME |
 | `<measure>` | A measure: its numeric id, or its name (all digits is an id) |
 
 ### `improv set`
@@ -159,7 +159,7 @@ Usage: improv set [OPTIONS] <db> <measure> <value>
 
 | Argument | Description |
 | --- | --- |
-| `<db>` | The model store: a file, or postgres://USER@HOST/DB?model=NAME |
+| `<db>` | The model store: a file, postgres://USER@HOST/DB?model=NAME or duckdb:FILE?model=NAME |
 | `<measure>` | A measure: its numeric id, or its name (all digits is an id) |
 | `<value>` | The cell's value |
 | `--at` `<Cat=Item>` | The cell's coordinate: Category=Item pairs, comma-joined, space-separated, or in repeated --at flags |
@@ -174,7 +174,7 @@ Usage: improv list <db>
 
 | Argument | Description |
 | --- | --- |
-| `<db>` | The model store: a file, or postgres://USER@HOST/DB?model=NAME |
+| `<db>` | The model store: a file, postgres://USER@HOST/DB?model=NAME or duckdb:FILE?model=NAME |
 
 ### `improv save-view`
 
@@ -188,7 +188,7 @@ Usage: improv save-view [OPTIONS] <db> <view-id> <name> <measure>
 
 | Argument | Description |
 | --- | --- |
-| `<db>` | The model store: a file, or postgres://USER@HOST/DB?model=NAME |
+| `<db>` | The model store: a file, postgres://USER@HOST/DB?model=NAME or duckdb:FILE?model=NAME |
 | `<view-id>` | The view's numeric id |
 | `<name>` | The view's name |
 | `<measure>` | The measure, by id or name |
@@ -207,7 +207,7 @@ Usage: improv format <db> <measure> <format>...
 
 | Argument | Description |
 | --- | --- |
-| `<db>` | The model store: a file, or postgres://USER@HOST/DB?model=NAME |
+| `<db>` | The model store: a file, postgres://USER@HOST/DB?model=NAME or duckdb:FILE?model=NAME |
 | `<measure>` | A measure: its numeric id, or its name (all digits is an id) |
 | `<format>` | general, or 0 to 15 decimals, then grouped |
 
@@ -221,7 +221,7 @@ Usage: improv show <db> <measure>
 
 | Argument | Description |
 | --- | --- |
-| `<db>` | The model store: a file, or postgres://USER@HOST/DB?model=NAME |
+| `<db>` | The model store: a file, postgres://USER@HOST/DB?model=NAME or duckdb:FILE?model=NAME |
 | `<measure>` | A measure: its numeric id, or its name (all digits is an id) |
 
 ### `improv eval`
@@ -236,7 +236,7 @@ Usage: improv eval [OPTIONS] <db> <measure>
 
 | Argument | Description |
 | --- | --- |
-| `<db>` | The model store: a file, or postgres://USER@HOST/DB?model=NAME |
+| `<db>` | The model store: a file, postgres://USER@HOST/DB?model=NAME or duckdb:FILE?model=NAME |
 | `<measure>` | A measure: its numeric id, or its name (all digits is an id) |
 | `--scenario` `<name>` | The scenario to evaluate under |
 
@@ -252,7 +252,7 @@ Usage: improv scenario [OPTIONS] <db> <scenario-name> <measure> <value>
 
 | Argument | Description |
 | --- | --- |
-| `<db>` | The model store: a file, or postgres://USER@HOST/DB?model=NAME |
+| `<db>` | The model store: a file, postgres://USER@HOST/DB?model=NAME or duckdb:FILE?model=NAME |
 | `<scenario-name>` | The scenario's name |
 | `<measure>` | A measure: its numeric id, or its name (all digits is an id) |
 | `<value>` | The overriding value |
@@ -268,7 +268,7 @@ Usage: improv export <db>
 
 | Argument | Description |
 | --- | --- |
-| `<db>` | The model store: a file, or postgres://USER@HOST/DB?model=NAME |
+| `<db>` | The model store: a file, postgres://USER@HOST/DB?model=NAME or duckdb:FILE?model=NAME |
 
 ### `improv import-sql`
 
@@ -282,7 +282,7 @@ Usage: improv import-sql [OPTIONS] <db> <source.sqlite> <measure-id> <measure-na
 
 | Argument | Description |
 | --- | --- |
-| `<db>` | The model store: a file, or postgres://USER@HOST/DB?model=NAME |
+| `<db>` | The model store: a file, postgres://USER@HOST/DB?model=NAME or duckdb:FILE?model=NAME |
 | `<source.sqlite>` | The SQLite database to query |
 | `<measure-id>` | The new measure's numeric id |
 | `<measure-name>` | The new measure's name |
@@ -303,7 +303,7 @@ Usage: improv refresh-sql <db> <source.sqlite> <measure>
 
 | Argument | Description |
 | --- | --- |
-| `<db>` | The model store: a file, or postgres://USER@HOST/DB?model=NAME |
+| `<db>` | The model store: a file, postgres://USER@HOST/DB?model=NAME or duckdb:FILE?model=NAME |
 | `<source.sqlite>` | The SQLite database to query |
 | `<measure>` | A measure: its numeric id, or its name (all digits is an id) |
 
@@ -319,7 +319,7 @@ Usage: improv refresh-all <db> [source.sqlite]
 
 | Argument | Description |
 | --- | --- |
-| `<db>` | The model store: a file, or postgres://USER@HOST/DB?model=NAME |
+| `<db>` | The model store: a file, postgres://USER@HOST/DB?model=NAME or duckdb:FILE?model=NAME |
 | `<source.sqlite>` | The SQLite database the SQL-backed measures query |
 
 ### `improv serve-refresh`
@@ -334,7 +334,7 @@ Usage: improv serve-refresh [OPTIONS] <db> [source.sqlite]
 
 | Argument | Description |
 | --- | --- |
-| `<db>` | The model store: a file, or postgres://USER@HOST/DB?model=NAME |
+| `<db>` | The model store: a file, postgres://USER@HOST/DB?model=NAME or duckdb:FILE?model=NAME |
 | `<source.sqlite>` | The SQLite database the SQL-backed measures query |
 | `--tick` `<SECS>` | Seconds between ticks (default: `5`) |
 
@@ -350,7 +350,7 @@ Usage: improv export-sql <db> <target.sqlite> <measure> <table> <value-col>
 
 | Argument | Description |
 | --- | --- |
-| `<db>` | The model store: a file, or postgres://USER@HOST/DB?model=NAME |
+| `<db>` | The model store: a file, postgres://USER@HOST/DB?model=NAME or duckdb:FILE?model=NAME |
 | `<target.sqlite>` | The SQLite database to write |
 | `<measure>` | A measure: its numeric id, or its name (all digits is an id) |
 | `<table>` | The table |
@@ -368,7 +368,7 @@ Usage: improv import-csv [OPTIONS] <db> <file.csv> <measure-id> <measure-name> <
 
 | Argument | Description |
 | --- | --- |
-| `<db>` | The model store: a file, or postgres://USER@HOST/DB?model=NAME |
+| `<db>` | The model store: a file, postgres://USER@HOST/DB?model=NAME or duckdb:FILE?model=NAME |
 | `<file.csv>` | The file to read |
 | `<measure-id>` | The new measure's numeric id |
 | `<measure-name>` | The new measure's name |
@@ -389,7 +389,7 @@ Usage: improv export-csv [OPTIONS] <db> <target.csv> <measure>
 
 | Argument | Description |
 | --- | --- |
-| `<db>` | The model store: a file, or postgres://USER@HOST/DB?model=NAME |
+| `<db>` | The model store: a file, postgres://USER@HOST/DB?model=NAME or duckdb:FILE?model=NAME |
 | `<target.csv>` | The file to write (tab-separated if it ends in .tsv) |
 | `<measure>` | A measure: its numeric id, or its name (all digits is an id) |
 | `--tsv` `<TSV>` | Tab-separated |
@@ -406,7 +406,7 @@ Usage: improv stream <db> <target-measure>...
 
 | Argument | Description |
 | --- | --- |
-| `<db>` | The model store: a file, or postgres://USER@HOST/DB?model=NAME |
+| `<db>` | The model store: a file, postgres://USER@HOST/DB?model=NAME or duckdb:FILE?model=NAME |
 | `<target-measure>` | The measures whose changes to print, by id or name |
 
 ### `improv policy`

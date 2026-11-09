@@ -22,6 +22,7 @@ members = [
     "crates/pg_model",
     "crates/duckdb_model",
     "crates/policy",
+    "crates/storage_duckdb",
 ]
 # pg_improv is its own workspace (pgrx needs pg_config + libclang); see its Cargo.toml.
 # duckdb_improv too (its loadable-extension duckdb must not unify with

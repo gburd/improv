@@ -6,6 +6,19 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **DuckDB-hosted models.** A model can live in a DuckDB file:
+  `improv init 'duckdb:/srv/plans.duckdb?model=plan'`, then every `improv`
+  command, `improv policy` included, works on that target. The file holds
+  an `improv` catalog shaped like the Postgres one (categories, items,
+  measures, cells, views, LAMBDAs, the meta, the access policies and a
+  version per model), any number of models, and saves only what changed.
+  DuckDB lets one program at a time write a file, so a second one is
+  refused with the holder's name instead of corrupting it. New crate
+  `improv_storage_duckdb`, on the bundled DuckDB 2.0 the workspace already
+  links; `improv_store` opens it behind its `duckdb` feature.
+
 ## [0.14.0] - 2026-11-08
 
 The release that encrypts every connection off the machine. Every Improv

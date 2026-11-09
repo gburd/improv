@@ -1,9 +1,11 @@
-//! One model store over either backend: an embedded Mentat file (a path) or
-//! a Postgres-hosted model (`postgres://…?model=<name>`).
+//! One model store over every backend: an embedded Mentat file (a path), a
+//! Postgres-hosted model (`postgres://…?model=<name>`), or, with the
+//! `duckdb` feature, a model in a DuckDB file (`duckdb:<file>?model=<name>`).
 //!
 //! The GUI, TUI, CLI and server open models through [`Store::open`]; every
-//! method delegates to `improv_storage_mentat::ModelStore` or
-//! `improv_storage_pg::PgModelStore`, which share one surface.
+//! method delegates to `improv_storage_mentat::ModelStore`,
+//! `improv_storage_pg::PgModelStore` or
+//! `improv_storage_duckdb::DuckModelStore`, which share one surface.
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 #![cfg_attr(coverage_nightly, allow(unused_features))]
 
@@ -24,9 +26,26 @@ pub enum StoreError {
     Mentat(improv_storage_mentat::StoreError),
     #[error(transparent)]
     Pg(improv_storage_pg::StoreError),
-    /// Another writer committed since this handle loaded (either backend).
+    #[cfg(feature = "duckdb")]
+    #[error(transparent)]
+    Duck(improv_storage_duckdb::StoreError),
+    /// A target this build cannot open (a `duckdb:` one without the
+    /// `duckdb` feature).
+    #[error("{0}")]
+    Unsupported(String),
+    /// Another writer committed since this handle loaded (any backend).
     #[error("conflict: {0}")]
     Conflict(String),
+}
+
+#[cfg(feature = "duckdb")]
+impl From<improv_storage_duckdb::StoreError> for StoreError {
+    fn from(e: improv_storage_duckdb::StoreError) -> Self {
+        match e {
+            improv_storage_duckdb::StoreError::Conflict(m) => StoreError::Conflict(m),
+            e => StoreError::Duck(e),
+        }
+    }
 }
 
 impl From<improv_storage_mentat::StoreError> for StoreError {
@@ -49,10 +68,12 @@ impl From<improv_storage_pg::StoreError> for StoreError {
 
 pub type Result<T> = std::result::Result<T, StoreError>;
 
-/// A model store: Mentat file or Postgres model.
+/// A model store: Mentat file, Postgres model or DuckDB-hosted model.
 pub enum Store {
     Mentat(ModelStore),
     Pg(PgModelStore),
+    #[cfg(feature = "duckdb")]
+    Duck(improv_storage_duckdb::DuckModelStore),
 }
 
 /// True when `target` names a Postgres-hosted model rather than a file.
@@ -60,20 +81,42 @@ pub fn is_postgres(target: &str) -> bool {
     target.starts_with("postgres://") || target.starts_with("postgresql://")
 }
 
+/// The DuckDB file a `duckdb:<file>?model=<name>` target names; `None`
+/// for any other target.
+pub fn duckdb_file(target: &str) -> Option<&str> {
+    let rest = target.strip_prefix("duckdb:")?;
+    Some(rest.rsplit_once('?').map_or(rest, |(f, _)| f))
+}
+
 macro_rules! delegate {
     ($self:ident, $s:ident => $e:expr) => {
         match $self {
             Store::Mentat($s) => Ok($e?),
             Store::Pg($s) => Ok($e?),
+            #[cfg(feature = "duckdb")]
+            Store::Duck($s) => Ok($e?),
         }
     };
 }
 
 impl Store {
     /// Open `target`: a `postgres://` / `postgresql://` URL with `?model=`
-    /// opens that Postgres model; anything else is a Mentat file path (`""`
-    /// is in-memory).
+    /// opens that Postgres model; `duckdb:<file>?model=<name>` that model
+    /// in a DuckDB file (made when missing; needs the `duckdb` feature);
+    /// anything else is a Mentat file path (`""` is in-memory).
     pub fn open(target: &str) -> Result<Self> {
+        if duckdb_file(target).is_some() {
+            #[cfg(feature = "duckdb")]
+            return Ok(Store::Duck(improv_storage_duckdb::DuckModelStore::open(
+                target,
+            )?));
+            #[cfg(not(feature = "duckdb"))]
+            return Err(StoreError::Unsupported(
+                "this program was built without DuckDB model stores: open a duckdb: model \
+                 with the improv CLI, or through improv-server"
+                    .into(),
+            ));
+        }
         Ok(if is_postgres(target) {
             Store::Pg(PgModelStore::open(target)?)
         } else {
@@ -122,18 +165,21 @@ impl Store {
     /// The stored access policies (`improv policy`), `None` when none are
     /// set. A Postgres model's are pg_improv's (0.13+, `improv.policies`),
     /// readable by a role that may act as its owner or that they allow
-    /// `Admin`.
+    /// `Admin`. A DuckDB model's are in its file's `improv.policy`.
     pub fn load_policies(&mut self) -> Result<Option<StoredPolicies>> {
         match self {
             Store::Mentat(s) => Ok(s.load_policies()?),
-            Store::Pg(s) => Ok(match s.load_policies()? {
-                Some(p) => Some(StoredPolicies {
-                    version: p.version,
-                    text: p.text,
-                    groups: p.groups,
-                }),
-                None => None,
-            }),
+            Store::Pg(s) => Ok(s.load_policies()?.map(|p| StoredPolicies {
+                version: p.version,
+                text: p.text,
+                groups: p.groups,
+            })),
+            #[cfg(feature = "duckdb")]
+            Store::Duck(s) => Ok(s.load_policies()?.map(|p| StoredPolicies {
+                version: p.version,
+                text: p.text,
+                groups: p.groups,
+            })),
         }
     }
 
@@ -163,6 +209,8 @@ impl Store {
         match self {
             Store::Mentat(s) => s.loaded_tx(),
             Store::Pg(s) => s.loaded_tx(),
+            #[cfg(feature = "duckdb")]
+            Store::Duck(s) => s.loaded_tx(),
         }
     }
 
@@ -170,6 +218,8 @@ impl Store {
         match self {
             Store::Mentat(s) => s.set_loaded_tx(tx),
             Store::Pg(s) => s.set_loaded_tx(tx),
+            #[cfg(feature = "duckdb")]
+            Store::Duck(s) => s.set_loaded_tx(tx),
         }
     }
 
@@ -179,13 +229,13 @@ impl Store {
     /// Callers that reopen the store per save carry this across handles.
     pub fn save_token(&self) -> SaveToken {
         match self {
-            Store::Mentat(s) => SaveToken {
-                tx: s.loaded_tx(),
-                pg: None,
-            },
             Store::Pg(s) => SaveToken {
                 tx: s.loaded_tx(),
                 pg: s.snapshot().cloned(),
+            },
+            s => SaveToken {
+                tx: s.loaded_tx(),
+                pg: None,
             },
         }
     }
@@ -196,13 +246,13 @@ impl Store {
     /// [`Store::adopt_save_token`].
     pub fn take_save_token(&mut self) -> SaveToken {
         match self {
-            Store::Mentat(s) => SaveToken {
-                tx: s.loaded_tx(),
-                pg: None,
-            },
             Store::Pg(s) => SaveToken {
                 tx: s.loaded_tx(),
                 pg: s.take_snapshot(),
+            },
+            s => SaveToken {
+                tx: s.loaded_tx(),
+                pg: None,
             },
         }
     }
@@ -210,22 +260,22 @@ impl Store {
     /// [`Store::set_save_token`] by value, without copying the snapshot.
     pub fn adopt_save_token(&mut self, token: SaveToken) {
         match self {
-            Store::Mentat(s) => s.set_loaded_tx(token.tx),
             Store::Pg(s) => {
                 s.set_loaded_tx(token.tx);
                 s.set_snapshot(token.pg);
             }
+            s => s.set_loaded_tx(token.tx),
         }
     }
 
     /// Adopt a token from [`Store::save_token`] before saving.
     pub fn set_save_token(&mut self, token: &SaveToken) {
         match self {
-            Store::Mentat(s) => s.set_loaded_tx(token.tx),
             Store::Pg(s) => {
                 s.set_loaded_tx(token.tx);
                 s.set_snapshot(token.pg.clone());
             }
+            s => s.set_loaded_tx(token.tx),
         }
     }
 }
@@ -611,6 +661,51 @@ mod tests {
         let e = s.save_model(&bad).unwrap_err();
         assert!(matches!(e, StoreError::Mentat(_)), "{e}");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A `duckdb:` target is a model in a DuckDB file: every delegating
+    /// method, the conflict mapping, and the policies.
+    #[cfg(feature = "duckdb")]
+    #[test]
+    fn duckdb_targets_open_a_duckdb_store() {
+        let dir = std::env::temp_dir().join(format!("improv_store_duck_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let t = format!("duckdb:{}?model=plan", dir.join("m.duckdb").display());
+        assert!(matches!(Store::open(&t).unwrap(), Store::Duck(_)));
+        exercise(&t);
+        let mut s = Store::open(&t).unwrap();
+        assert_eq!(s.load_policies().unwrap(), None);
+        assert_eq!(
+            s.save_policies(Some(("permit (principal, action, resource);", "")))
+                .unwrap(),
+            1
+        );
+        assert_eq!(s.policy_version().unwrap(), 1);
+        assert_eq!(s.load_policies().unwrap().unwrap().version, 1);
+        // A backend error keeps its backend.
+        let e = Store::open("duckdb:/a.duckdb").err().unwrap();
+        assert!(matches!(e, StoreError::Duck(_)), "{e}");
+        assert!(e.to_string().contains("?model="), "{e}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn duckdb_files_are_named_by_their_targets() {
+        assert_eq!(
+            duckdb_file("duckdb:/a/b.duckdb?model=p"),
+            Some("/a/b.duckdb")
+        );
+        assert_eq!(duckdb_file("duckdb:b.duckdb"), Some("b.duckdb"));
+        assert_eq!(duckdb_file("/a/b.duckdb"), None);
+        assert_eq!(duckdb_file("postgres://h/d?model=p"), None);
+    }
+
+    #[cfg(not(feature = "duckdb"))]
+    #[test]
+    fn duckdb_targets_need_the_feature() {
+        let e = Store::open("duckdb:/tmp/x.duckdb?model=p").err().unwrap();
+        assert!(matches!(e, StoreError::Unsupported(_)), "{e}");
+        assert!(!std::path::Path::new("duckdb:/tmp/x.duckdb?model=p").exists());
     }
 
     #[test]

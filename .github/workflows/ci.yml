@@ -38,6 +38,7 @@ jobs:
           -p improv_core_model
           -p improv_storage_mentat
           -p improv_storage_sql
+          -p improv_storage_duckdb
           -p improv_storage_csv
           -p improv_engine
           -p improv_verified
@@ -79,6 +80,7 @@ jobs:
           -p improv_core_model
           -p improv_storage_mentat
           -p improv_storage_sql
+          -p improv_storage_duckdb
           -p improv_storage_csv
           -p improv_engine
           -p improv_verified

@@ -209,7 +209,8 @@ Saved** after a save conflict · F1 function help, Ctrl+? context help ·
 | `improv_nl_formula` | | Controlled-English ⇄ formula |
 | `improv_storage_mentat` | | A model as datoms in an embedded [Mentat](https://codeberg.org/gregburd/mentat) (SQLite) store |
 | `improv_storage_pg` | | A model in a Postgres `improv` catalog, with columns bound to tables |
-| `improv_store` | | Opens a file or a `postgres://` URL |
+| `improv_storage_duckdb` | | A model in an `improv` catalog inside a DuckDB file |
+| `improv_store` | | Opens a file, a `postgres://` URL or a `duckdb:` model |
 | `improv_storage_sql`, `improv_storage_csv`, `improv_data_source` | | SQL and CSV import, export and refresh |
 | `improv_extfn` | | Sandboxed external functions (Python, R, Julia, Pure, Wasm) |
 | `improv_cli` | `improv` | Command-line tool and `stream` |

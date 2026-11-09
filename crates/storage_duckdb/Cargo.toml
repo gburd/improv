@@ -1,0 +1,31 @@
+[package]
+name = "improv_storage_duckdb"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "An Improv model stored in a DuckDB file, in an improv.* catalog like the Postgres one"
+
+[lib]
+name = "improv_storage_duckdb"
+path = "src/lib.rs"
+
+[dependencies]
+improv_core_model = { path = "../core_model" }
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dependencies.duckdb]
+# The bundled DuckDB 2.0 storage_sql already links: one libduckdb in the
+# workspace. A file it creates is 2.0-only (storage version 69).
+version = "1.20000.1"
+features = ["bundled"]
+
+[dev-dependencies]
+proptest = "1"
+
+# `cargo llvm-cov` on nightly sets `--cfg coverage_nightly`; test modules are
+# `coverage(off)` so the report measures library code only.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(coverage_nightly)"] }

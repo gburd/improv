@@ -116,7 +116,7 @@ Prefer `cargo nextest run` for the fast suite. Property/fuzz crates:
 ## Layout
 
 Cargo workspace, `crates/*`: `core_model`, `engine`, `nl_formula`,
-`storage_mentat`, `storage_pg`, `store`, `storage_sql`, `storage_csv`,
+`storage_mentat`, `storage_pg`, `storage_duckdb`, `store`, `storage_sql`, `storage_csv`,
 `data_source`, `extfn`, `verified` (Verus-proven kernels), `cli`, `tui`,
 `gui`, `server`, `pg_model`, `duckdb_model`,
 `pg_improv` (the Postgres extension: its own workspace and `Cargo.lock`,

@@ -10,7 +10,7 @@ path = "src/main.rs"
 
 [dependencies]
 improv_core_model = { path = "../core_model" }
-improv_store = { path = "../store" }
+improv_store = { path = "../store", features = ["duckdb"] }
 improv_storage_sql = { path = "../storage_sql" }
 improv_storage_csv = { path = "../storage_csv" }
 improv_engine = { path = "../engine" }

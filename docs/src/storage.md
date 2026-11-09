@@ -223,9 +223,10 @@ measures it never loaded stay as they are. A full load lifts the limit again.
 | Target | Backend |
 |--------|---------|
 | starts with `postgres://` or `postgresql://` | `improv_storage_pg::PgModelStore` |
+| starts with `duckdb:` (`duckdb:FILE?model=NAME`) | `improv_storage_duckdb::DuckModelStore` ([below](#the-duckdb-store); `improv_store`'s `duckdb` feature, which the CLI and improv-server turn on) |
 | anything else (a path; `""` for in-memory) | `improv_storage_mentat::ModelStore` |
 
-Both backends have the same methods: `load_model`, `load_partial`,
+Every backend has the same methods: `load_model`, `load_partial`,
 `save_model`, `save_changes`, `save_cells`, `reload_model`, `tx_high_water`,
 `loaded_tx`, `set_loaded_tx`. A conflict from either backend becomes
 `improv_store::StoreError::Conflict`.
@@ -348,3 +349,56 @@ expiry).
 
 For the extension itself (binding tables, result tables, sync modes) see
 [Improv in Postgres (pg_improv)](./postgres.md).
+
+## The DuckDB store
+
+`improv_storage_duckdb::DuckModelStore` keeps models in a DuckDB file, in
+an `improv` schema shaped like the Postgres catalog. One file holds any
+number of models: `duckdb:/srv/plans.duckdb?model=plan` names the model
+`plan` in that file. `?model=` is required, and no other parameter is
+accepted. Opening a missing file creates it and its catalog; opening a
+model name the file lacks creates the model. The CLI's commands other
+than `init` and the imports still refuse a file that does not exist.
+
+The catalog is `CATALOG_SQL` in `crates/storage_duckdb/src/lib.rs`:
+
+| Table | Holds |
+|-------|-------|
+| `improv.catalog` | the catalog's version (1); a file at a newer one is refused, not misread |
+| `improv.model` | one row per model: `id`, `name` (unique) |
+| `improv.model_version` | one `tx` counter per model: the conflict token and the high-water mark |
+| `improv.category`, `improv.item` | as in Postgres |
+| `improv.measure` | `name`, `value_type`, `kind`, `formula` (JSON of the `Formula`), `description`, `categories BIGINT[]` (in the measure's order), `format` (JSON of the `NumberFormat`; NULL is General) |
+| `improv.cell` | input cells: `coord` (`{"<category id>": <item id>}`) and exactly one of `value_number` (numbers and enums), `value_boolean`, `value_text` (text, and datetimes as RFC 3339) |
+| `improv.view`, `improv.lambda` | JSON of each `View` and `NamedLambda` |
+| `improv.meta` | one `blob` per model: external functions, external calls, scenarios, SQL sources |
+| `improv.policy` | the access policies: `version`, `text` (NULL when cleared), `groups` |
+
+There are no bindings: every cell is an `improv.cell` row. The cell table
+has no primary key, since DuckDB's index made rewriting a million cells 30
+times slower (24 s against 0.8 s); the store deletes a cell's row before it
+writes one.
+
+**Saves.** Every save is one transaction that first moves the model's
+`tx` on. A handle whose loaded `tx` is no longer current gets `Conflict`,
+and so does the second of two saves that race (DuckDB fails the second
+write of the version row). `save_changes` deletes and appends only the
+named cells, and with `structure` replaces the model's catalog rows and
+deletes the cells of dropped measures. `save_model` rewrites every cell of
+the measures the handle loaded: all of them after `load_model`, the
+closure after `load_partial`. `save_policies` moves both the policies'
+version and `tx` on, so the server's change feed tells clients to reload.
+
+**One writer.** DuckDB lets one process open a file for writing, and two
+DuckDB instances on one file inside a process would corrupt it. So the
+handles of a process share one instance per file (by its canonical path),
+closed when the last handle goes. A second process is refused with the
+holder's name: `plans.duckdb is open in another program (improv-server
+(PID 4242) by user me). DuckDB lets one program at a time open a file for
+writing: while improv-server serves this model, change it through the
+server, or stop the server first`. The instance runs with DuckDB's
+external access and extension autoloading off: the store runs no SQL from
+the model.
+
+The file is DuckDB 2.0's format (the bundled DuckDB the workspace links).
+A DuckDB 1.x CLI cannot open it.

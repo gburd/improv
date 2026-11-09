@@ -1,7 +1,8 @@
 //! The `improv` command line.
 //!
-//! A thin front-end over `improv_store::Store` (a Mentat file or a
-//! `postgres://…?model=` Postgres model). Each subcommand
+//! A thin front-end over `improv_store::Store` (a Mentat file, a
+//! `postgres://…?model=` Postgres model, or a `duckdb:FILE?model=` model
+//! in a DuckDB file). Each subcommand
 //! opens the store, mutates the loaded `Model`, and saves it back.
 //!
 //! Coordinates (`--at`) resolve category *names* and item *names* to ids via
@@ -320,11 +321,13 @@ pub fn dim_spec(spec: &str) -> Result<(String, CategoryId, String), String> {
 
 // --- helpers ---
 
-/// Open an existing model. A local path that does not exist is an error,
-/// not a new empty model: a mistyped name would otherwise create one and
-/// run the command against it. `init` and the imports [`create`] instead.
+/// Open an existing model. A local path (or `duckdb:` file) that does not
+/// exist is an error, not a new empty model: a mistyped name would
+/// otherwise create one and run the command against it. `init` and the
+/// imports [`create`] instead.
 fn open(db: &str) -> Result<Store, String> {
-    if !improv_store::is_postgres(db) && !std::path::Path::new(db).exists() {
+    let file = improv_store::duckdb_file(db).unwrap_or(db);
+    if !improv_store::is_postgres(db) && !std::path::Path::new(file).exists() {
         return Err(format!(
             "no model at '{db}' (create one with: improv init {db})"
         ));

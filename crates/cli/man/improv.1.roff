@@ -11,8 +11,10 @@ is a
 .BR postgresql:// )
 URL, on that model in a Postgres database's
 .B improv
-catalog. Each invocation opens the store, mutates the loaded model, and saves
-it back.
+catalog, and when it is
+.BI duckdb: file ?model= name\fR,
+on that model in a DuckDB file. Each invocation opens the store, mutates the
+loaded model, and saves it back.
 .PP
 A model is built from
 .B categories
@@ -129,9 +131,18 @@ improv list \(aqpostgres://me@127.0.0.1/sales?model=plan\(aq
 .I <db>
 The model store: a single SQLite file created and read by
 .BR improv ,
-or a
+a
 .BI postgres:// ...?model= name
-URL. An empty string names an in-memory database that is discarded on exit.
+URL, or
+.BI duckdb: file ?model= name\fR,
+a model in a DuckDB file (created when missing, by
+.B init
+and the imports). DuckDB lets one program at a time open a file for writing:
+while
+.BR improv-server (1)
+serves a DuckDB file, the CLI is refused, naming the server, and changes go
+through the server. An empty string names an in-memory database that is
+discarded on exit.
 .SH ENVIRONMENT
 .TP
 .B IMPROV_LOCALE

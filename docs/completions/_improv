@@ -32,14 +32,14 @@ _improv() {
 _arguments "${_arguments_options[@]}" : \
 '-h[Print help (see more with '\''--help'\'')]' \
 '--help[Print help (see more with '\''--help'\'')]' \
-':db -- The model store\: a file, or postgres\://USER@HOST/DB?model=NAME:_default' \
+':db -- The model store\: a file, postgres\://USER@HOST/DB?model=NAME or duckdb\:FILE?model=NAME:_default' \
 && ret=0
 ;;
 (add-category)
 _arguments "${_arguments_options[@]}" : \
 '-h[Print help]' \
 '--help[Print help]' \
-':db -- The model store\: a file, or postgres\://USER@HOST/DB?model=NAME:_default' \
+':db -- The model store\: a file, postgres\://USER@HOST/DB?model=NAME or duckdb\:FILE?model=NAME:_default' \
 ':id -- The category'\''s numeric id:_default' \
 ':name -- The category'\''s name:_default' \
 && ret=0
@@ -48,7 +48,7 @@ _arguments "${_arguments_options[@]}" : \
 _arguments "${_arguments_options[@]}" : \
 '-h[Print help (see more with '\''--help'\'')]' \
 '--help[Print help (see more with '\''--help'\'')]' \
-':db -- The model store\: a file, or postgres\://USER@HOST/DB?model=NAME:_default' \
+':db -- The model store\: a file, postgres\://USER@HOST/DB?model=NAME or duckdb\:FILE?model=NAME:_default' \
 ':id -- The item'\''s numeric id:_default' \
 ':category -- The id of the item'\''s category:_default' \
 ':name -- The item'\''s name:_default' \
@@ -58,7 +58,7 @@ _arguments "${_arguments_options[@]}" : \
 _arguments "${_arguments_options[@]}" : \
 '-h[Print help (see more with '\''--help'\'')]' \
 '--help[Print help (see more with '\''--help'\'')]' \
-':db -- The model store\: a file, or postgres\://USER@HOST/DB?model=NAME:_default' \
+':db -- The model store\: a file, postgres\://USER@HOST/DB?model=NAME or duckdb\:FILE?model=NAME:_default' \
 ':id -- The measure'\''s numeric id:_default' \
 ':name -- The measure'\''s name:_default' \
 ':value_type -- number, boolean or text:_default' \
@@ -70,7 +70,7 @@ _arguments "${_arguments_options[@]}" : \
 _arguments "${_arguments_options[@]}" : \
 '-h[Print help (see more with '\''--help'\'')]' \
 '--help[Print help (see more with '\''--help'\'')]' \
-':db -- The model store\: a file, or postgres\://USER@HOST/DB?model=NAME:_default' \
+':db -- The model store\: a file, postgres\://USER@HOST/DB?model=NAME or duckdb\:FILE?model=NAME:_default' \
 ':id -- The measure'\''s numeric id:_default' \
 ':name -- The measure'\''s name:_default' \
 ':formula -- The formula text (in IMPROV_LOCALE'\''s spelling):_default' \
@@ -81,7 +81,7 @@ _arguments "${_arguments_options[@]}" : \
 '--refresh=[A CALL(...) measure'\''s refresh policy]:policy:_default' \
 '-h[Print help (see more with '\''--help'\'')]' \
 '--help[Print help (see more with '\''--help'\'')]' \
-':db -- The model store\: a file, or postgres\://USER@HOST/DB?model=NAME:_default' \
+':db -- The model store\: a file, postgres\://USER@HOST/DB?model=NAME or duckdb\:FILE?model=NAME:_default' \
 ':id -- The measure'\''s (or LAMBDA'\''s) numeric id:_default' \
 ':definition -- The definition\: Target = formula, CALL(...) or LAMBDA(...):_default' \
 && ret=0
@@ -90,7 +90,7 @@ _arguments "${_arguments_options[@]}" : \
 _arguments "${_arguments_options[@]}" : \
 '-h[Print help (see more with '\''--help'\'')]' \
 '--help[Print help (see more with '\''--help'\'')]' \
-':db -- The model store\: a file, or postgres\://USER@HOST/DB?model=NAME:_default' \
+':db -- The model store\: a file, postgres\://USER@HOST/DB?model=NAME or duckdb\:FILE?model=NAME:_default' \
 ':name -- The function'\''s name, as CALL(...) names it:_default' \
 ':arity -- How many arguments it takes:_default' \
 ':body -- The Python body:_default' \
@@ -100,7 +100,7 @@ _arguments "${_arguments_options[@]}" : \
 _arguments "${_arguments_options[@]}" : \
 '-h[Print help (see more with '\''--help'\'')]' \
 '--help[Print help (see more with '\''--help'\'')]' \
-':db -- The model store\: a file, or postgres\://USER@HOST/DB?model=NAME:_default' \
+':db -- The model store\: a file, postgres\://USER@HOST/DB?model=NAME or duckdb\:FILE?model=NAME:_default' \
 ':measure -- A measure\: its numeric id, or its name (all digits is an id):_default' \
 && ret=0
 ;;
@@ -109,7 +109,7 @@ _arguments "${_arguments_options[@]}" : \
 '*--at=[The cell'\''s coordinate\: Category=Item pairs, comma-joined, space-separated, or in repeated --at flags]:Cat=Item:_default' \
 '-h[Print help (see more with '\''--help'\'')]' \
 '--help[Print help (see more with '\''--help'\'')]' \
-':db -- The model store\: a file, or postgres\://USER@HOST/DB?model=NAME:_default' \
+':db -- The model store\: a file, postgres\://USER@HOST/DB?model=NAME or duckdb\:FILE?model=NAME:_default' \
 ':measure -- A measure\: its numeric id, or its name (all digits is an id):_default' \
 ':value -- The cell'\''s value:_default' \
 '*::stray -- A coordinate given without --at (refused, with a hint):_default' \
@@ -119,7 +119,7 @@ _arguments "${_arguments_options[@]}" : \
 _arguments "${_arguments_options[@]}" : \
 '-h[Print help]' \
 '--help[Print help]' \
-':db -- The model store\: a file, or postgres\://USER@HOST/DB?model=NAME:_default' \
+':db -- The model store\: a file, postgres\://USER@HOST/DB?model=NAME or duckdb\:FILE?model=NAME:_default' \
 && ret=0
 ;;
 (save-view)
@@ -128,7 +128,7 @@ _arguments "${_arguments_options[@]}" : \
 '--cols=[The column categories, comma-separated, outer first]:Cat,...:_default' \
 '-h[Print help (see more with '\''--help'\'')]' \
 '--help[Print help (see more with '\''--help'\'')]' \
-':db -- The model store\: a file, or postgres\://USER@HOST/DB?model=NAME:_default' \
+':db -- The model store\: a file, postgres\://USER@HOST/DB?model=NAME or duckdb\:FILE?model=NAME:_default' \
 ':id -- The view'\''s numeric id:_default' \
 ':name -- The view'\''s name:_default' \
 ':measure -- The measure, by id or name:_default' \
@@ -138,7 +138,7 @@ _arguments "${_arguments_options[@]}" : \
 _arguments "${_arguments_options[@]}" : \
 '-h[Print help (see more with '\''--help'\'')]' \
 '--help[Print help (see more with '\''--help'\'')]' \
-':db -- The model store\: a file, or postgres\://USER@HOST/DB?model=NAME:_default' \
+':db -- The model store\: a file, postgres\://USER@HOST/DB?model=NAME or duckdb\:FILE?model=NAME:_default' \
 ':measure -- A measure\: its numeric id, or its name (all digits is an id):_default' \
 '*::format -- general, or 0 to 15 decimals, then grouped:_default' \
 && ret=0
@@ -147,7 +147,7 @@ _arguments "${_arguments_options[@]}" : \
 _arguments "${_arguments_options[@]}" : \
 '-h[Print help]' \
 '--help[Print help]' \
-':db -- The model store\: a file, or postgres\://USER@HOST/DB?model=NAME:_default' \
+':db -- The model store\: a file, postgres\://USER@HOST/DB?model=NAME or duckdb\:FILE?model=NAME:_default' \
 ':measure -- A measure\: its numeric id, or its name (all digits is an id):_default' \
 && ret=0
 ;;
@@ -156,7 +156,7 @@ _arguments "${_arguments_options[@]}" : \
 '--scenario=[The scenario to evaluate under]:name:_default' \
 '-h[Print help (see more with '\''--help'\'')]' \
 '--help[Print help (see more with '\''--help'\'')]' \
-':db -- The model store\: a file, or postgres\://USER@HOST/DB?model=NAME:_default' \
+':db -- The model store\: a file, postgres\://USER@HOST/DB?model=NAME or duckdb\:FILE?model=NAME:_default' \
 ':measure -- A measure\: its numeric id, or its name (all digits is an id):_default' \
 && ret=0
 ;;
@@ -165,7 +165,7 @@ _arguments "${_arguments_options[@]}" : \
 '*--at=[The cell'\''s coordinate\: Category=Item pairs, comma-joined, space-separated, or in repeated --at flags]:Cat=Item:_default' \
 '-h[Print help (see more with '\''--help'\'')]' \
 '--help[Print help (see more with '\''--help'\'')]' \
-':db -- The model store\: a file, or postgres\://USER@HOST/DB?model=NAME:_default' \
+':db -- The model store\: a file, postgres\://USER@HOST/DB?model=NAME or duckdb\:FILE?model=NAME:_default' \
 ':scenario -- The scenario'\''s name:_default' \
 ':measure -- A measure\: its numeric id, or its name (all digits is an id):_default' \
 ':value -- The overriding value:_default' \
@@ -176,7 +176,7 @@ _arguments "${_arguments_options[@]}" : \
 _arguments "${_arguments_options[@]}" : \
 '-h[Print help]' \
 '--help[Print help]' \
-':db -- The model store\: a file, or postgres\://USER@HOST/DB?model=NAME:_default' \
+':db -- The model store\: a file, postgres\://USER@HOST/DB?model=NAME or duckdb\:FILE?model=NAME:_default' \
 && ret=0
 ;;
 (import-sql)
@@ -184,7 +184,7 @@ _arguments "${_arguments_options[@]}" : \
 '--refresh=[The measure'\''s refresh policy]:policy:_default' \
 '-h[Print help (see more with '\''--help'\'')]' \
 '--help[Print help (see more with '\''--help'\'')]' \
-':db -- The model store\: a file, or postgres\://USER@HOST/DB?model=NAME:_default' \
+':db -- The model store\: a file, postgres\://USER@HOST/DB?model=NAME or duckdb\:FILE?model=NAME:_default' \
 ':source -- The SQLite database to query:_default' \
 ':measure -- The new measure'\''s numeric id:_default' \
 ':name -- The new measure'\''s name:_default' \
@@ -197,7 +197,7 @@ _arguments "${_arguments_options[@]}" : \
 _arguments "${_arguments_options[@]}" : \
 '-h[Print help (see more with '\''--help'\'')]' \
 '--help[Print help (see more with '\''--help'\'')]' \
-':db -- The model store\: a file, or postgres\://USER@HOST/DB?model=NAME:_default' \
+':db -- The model store\: a file, postgres\://USER@HOST/DB?model=NAME or duckdb\:FILE?model=NAME:_default' \
 ':source -- The SQLite database to query:_default' \
 ':measure -- A measure\: its numeric id, or its name (all digits is an id):_default' \
 && ret=0
@@ -206,7 +206,7 @@ _arguments "${_arguments_options[@]}" : \
 _arguments "${_arguments_options[@]}" : \
 '-h[Print help (see more with '\''--help'\'')]' \
 '--help[Print help (see more with '\''--help'\'')]' \
-':db -- The model store\: a file, or postgres\://USER@HOST/DB?model=NAME:_default' \
+':db -- The model store\: a file, postgres\://USER@HOST/DB?model=NAME or duckdb\:FILE?model=NAME:_default' \
 '::source -- The SQLite database the SQL-backed measures query:_default' \
 && ret=0
 ;;
@@ -215,7 +215,7 @@ _arguments "${_arguments_options[@]}" : \
 '--tick=[Seconds between ticks]:SECS:_default' \
 '-h[Print help (see more with '\''--help'\'')]' \
 '--help[Print help (see more with '\''--help'\'')]' \
-':db -- The model store\: a file, or postgres\://USER@HOST/DB?model=NAME:_default' \
+':db -- The model store\: a file, postgres\://USER@HOST/DB?model=NAME or duckdb\:FILE?model=NAME:_default' \
 '::source -- The SQLite database the SQL-backed measures query:_default' \
 && ret=0
 ;;
@@ -223,7 +223,7 @@ _arguments "${_arguments_options[@]}" : \
 _arguments "${_arguments_options[@]}" : \
 '-h[Print help (see more with '\''--help'\'')]' \
 '--help[Print help (see more with '\''--help'\'')]' \
-':db -- The model store\: a file, or postgres\://USER@HOST/DB?model=NAME:_default' \
+':db -- The model store\: a file, postgres\://USER@HOST/DB?model=NAME or duckdb\:FILE?model=NAME:_default' \
 ':target -- The SQLite database to write:_default' \
 ':measure -- A measure\: its numeric id, or its name (all digits is an id):_default' \
 ':table -- The table:_default' \
@@ -236,7 +236,7 @@ _arguments "${_arguments_options[@]}" : \
 '--no-header[The file has no header row\: columns are 0-based indices]' \
 '-h[Print help (see more with '\''--help'\'')]' \
 '--help[Print help (see more with '\''--help'\'')]' \
-':db -- The model store\: a file, or postgres\://USER@HOST/DB?model=NAME:_default' \
+':db -- The model store\: a file, postgres\://USER@HOST/DB?model=NAME or duckdb\:FILE?model=NAME:_default' \
 ':file -- The file to read:_default' \
 ':measure -- The new measure'\''s numeric id:_default' \
 ':name -- The new measure'\''s name:_default' \
@@ -249,7 +249,7 @@ _arguments "${_arguments_options[@]}" : \
 '--tsv[Tab-separated]' \
 '-h[Print help (see more with '\''--help'\'')]' \
 '--help[Print help (see more with '\''--help'\'')]' \
-':db -- The model store\: a file, or postgres\://USER@HOST/DB?model=NAME:_default' \
+':db -- The model store\: a file, postgres\://USER@HOST/DB?model=NAME or duckdb\:FILE?model=NAME:_default' \
 ':target -- The file to write (tab-separated if it ends in .tsv):_default' \
 ':measure -- A measure\: its numeric id, or its name (all digits is an id):_default' \
 && ret=0
@@ -258,7 +258,7 @@ _arguments "${_arguments_options[@]}" : \
 _arguments "${_arguments_options[@]}" : \
 '-h[Print help (see more with '\''--help'\'')]' \
 '--help[Print help (see more with '\''--help'\'')]' \
-':db -- The model store\: a file, or postgres\://USER@HOST/DB?model=NAME:_default' \
+':db -- The model store\: a file, postgres\://USER@HOST/DB?model=NAME or duckdb\:FILE?model=NAME:_default' \
 '*::targets -- The measures whose changes to print, by id or name:_default' \
 && ret=0
 ;;
@@ -281,7 +281,7 @@ _arguments "${_arguments_options[@]}" : \
 '--groups=[The groups, a JSON file\: {"group"\: {"users"\: \[...\], "groups"\: \[...\]}}]:groups.json:_default' \
 '-h[Print help (see more with '\''--help'\'')]' \
 '--help[Print help (see more with '\''--help'\'')]' \
-':db -- The model store\: a file, or postgres\://USER@HOST/DB?model=NAME:_default' \
+':db -- The model store\: a file, postgres\://USER@HOST/DB?model=NAME or duckdb\:FILE?model=NAME:_default' \
 ':file -- The Cedar policy file:_default' \
 && ret=0
 ;;
@@ -290,7 +290,7 @@ _arguments "${_arguments_options[@]}" : \
 '--groups=[The groups, a JSON file]:groups.json:_default' \
 '-h[Print help (see more with '\''--help'\'')]' \
 '--help[Print help (see more with '\''--help'\'')]' \
-':db -- The model store\: a file, or postgres\://USER@HOST/DB?model=NAME:_default' \
+':db -- The model store\: a file, postgres\://USER@HOST/DB?model=NAME or duckdb\:FILE?model=NAME:_default' \
 ':file -- The Cedar policy file:_default' \
 && ret=0
 ;;
@@ -299,14 +299,14 @@ _arguments "${_arguments_options[@]}" : \
 '--groups[Print the groups JSON]' \
 '-h[Print help (see more with '\''--help'\'')]' \
 '--help[Print help (see more with '\''--help'\'')]' \
-':db -- The model store\: a file, or postgres\://USER@HOST/DB?model=NAME:_default' \
+':db -- The model store\: a file, postgres\://USER@HOST/DB?model=NAME or duckdb\:FILE?model=NAME:_default' \
 && ret=0
 ;;
 (clear)
 _arguments "${_arguments_options[@]}" : \
 '-h[Print help]' \
 '--help[Print help]' \
-':db -- The model store\: a file, or postgres\://USER@HOST/DB?model=NAME:_default' \
+':db -- The model store\: a file, postgres\://USER@HOST/DB?model=NAME or duckdb\:FILE?model=NAME:_default' \
 && ret=0
 ;;
 (check)
@@ -322,7 +322,7 @@ _arguments "${_arguments_options[@]}" : \
 '--groups=[The groups for --policies, a JSON file]:groups.json:_default' \
 '-h[Print help (see more with '\''--help'\'')]' \
 '--help[Print help (see more with '\''--help'\'')]' \
-':db -- The model store\: a file, or postgres\://USER@HOST/DB?model=NAME:_default' \
+':db -- The model store\: a file, postgres\://USER@HOST/DB?model=NAME or duckdb\:FILE?model=NAME:_default' \
 ':action -- The action:_default' \
 && ret=0
 ;;
@@ -334,7 +334,7 @@ _arguments "${_arguments_options[@]}" : \
 '*--item=[An item as Category=Item (analyst; repeatable)]:Cat=Item:_default' \
 '-h[Print help (see more with '\''--help'\'')]' \
 '--help[Print help (see more with '\''--help'\'')]' \
-':db -- The model store\: a file, or postgres\://USER@HOST/DB?model=NAME:_default' \
+':db -- The model store\: a file, postgres\://USER@HOST/DB?model=NAME or duckdb\:FILE?model=NAME:_default' \
 ':name -- viewer, editor, analyst, hide-measures or admin:_default' \
 && ret=0
 ;;
@@ -344,7 +344,7 @@ _arguments "${_arguments_options[@]}" : \
 '*--role=[A role the user has (repeatable)]:name:_default' \
 '-h[Print help (see more with '\''--help'\'')]' \
 '--help[Print help (see more with '\''--help'\'')]' \
-':db -- The model store\: a file, or postgres\://USER@HOST/DB?model=NAME:_default' \
+':db -- The model store\: a file, postgres\://USER@HOST/DB?model=NAME or duckdb\:FILE?model=NAME:_default' \
 && ret=0
 ;;
 (help)

@@ -6,7 +6,8 @@ use crate::{dim_spec, number, refresh_policy, value_type};
 use clap::{Args, Parser, Subcommand};
 use improv_core_model::{CategoryId, RefreshPolicy, ValueType};
 
-const DB: &str = "The model store: a file, or postgres://USER@HOST/DB?model=NAME";
+const DB: &str =
+    "The model store: a file, postgres://USER@HOST/DB?model=NAME or duckdb:FILE?model=NAME";
 const MEASURE: &str = "A measure: its numeric id, or its name (all digits is an id)";
 const AT: &str = "The cell's coordinate: Category=Item pairs, comma-joined, \
                   space-separated, or in repeated --at flags";

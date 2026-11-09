@@ -3288,6 +3288,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "improv_storage_duckdb"
+version = "0.14.0"
+dependencies = [
+ "chrono",
+ "duckdb",
+ "improv_core_model",
+ "proptest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "improv_storage_mentat"
 version = "0.14.0"
 dependencies = [
@@ -3337,6 +3350,7 @@ name = "improv_store"
 version = "0.14.0"
 dependencies = [
  "improv_core_model",
+ "improv_storage_duckdb",
  "improv_storage_mentat",
  "improv_storage_pg",
  "thiserror 2.0.21",

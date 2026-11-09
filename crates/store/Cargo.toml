@@ -12,7 +12,15 @@ path = "src/lib.rs"
 improv_core_model = { path = "../core_model" }
 improv_storage_mentat = { path = "../storage_mentat" }
 improv_storage_pg = { path = "../storage_pg" }
+improv_storage_duckdb = { path = "../storage_duckdb", optional = true }
 thiserror.workspace = true
+
+[features]
+# `duckdb:FILE?model=NAME` targets (crates/storage_duckdb). Off by default:
+# it links the bundled libduckdb, which the CLI and improv-server turn on
+# and the GUIs do not need (they reach a DuckDB-hosted model through the
+# server, which holds the file).
+duckdb = ["dep:improv_storage_duckdb"]
 
 # `cargo llvm-cov` on nightly sets `--cfg coverage_nightly`; test modules are
 # `coverage(off)` so the report measures library code only.
