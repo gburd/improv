@@ -104,3 +104,23 @@ structure, and it would leave the rest of the GUI unnamed.
 4. The grid: ARIA grid structure, the keyboard cursor, Enter to edit.
 5. The e2e check (`Accessibility.getFullAXTree`) in `drive.py`, the
    golden unchanged. Then the docs and the CHANGELOG.
+
+## As built
+
+All five landed as planned. Two findings from building it:
+
+- **Rows off screen.** The grid gives no nodes to rows scrolled out of
+  view. `aria-rowcount` still gives the full count, and the cursor's
+  row is always present. A model with 2.5M rows would otherwise build
+  millions of hidden elements per frame.
+- **A move with no focus.** When an arrow key moves the cursor, egui's
+  focus goes straight to the new cell, with no frame in between where
+  nothing has focus. A frame with no focus makes a screen reader
+  announce the whole canvas.
+
+Measured in `crates/gui_web/e2e` (headless Chromium 156): the grid's
+cells, headers, counts and indices, the Tab order through the tiles,
+cells, formulas and menus, a menu row run by a screen reader's click,
+and a cell edited from the keyboard. The web golden is unchanged
+(0 pixels differ). The model and the cursor are tested natively:
+gui_web has 100% of functions and 98.7% of branches covered.
