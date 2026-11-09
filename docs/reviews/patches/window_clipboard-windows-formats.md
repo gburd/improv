@@ -125,41 +125,54 @@ read back by another process). These need a person at the console or in
 an RDP session, because session 0 has no input desktop: `DoDragDrop` never
 finishes there, and no window is drawn.
 
-On santorini a release build and a model are ready in `C:\w-cwin\`:
+Build both binaries and a small model (Quantity over Time × Product), in
+a Developer or plain command prompt at the checkout's root:
 
 ```bat
-cd C:\w-cwin\check
-C:\w-cwin\target\release\improv-cosmic.exe check.db
+cargo build --locked --release -p improv_cli
+cd crates\gui_cosmic && cargo build --locked --release && cd ..\..
+set IM=target\release\improv.exe
+%IM% init check.db
+%IM% add-category check.db 1 Time
+%IM% add-category check.db 2 Product
+%IM% add-item check.db 10 1 2025
+%IM% add-item check.db 11 1 2026
+%IM% add-item check.db 20 2 Widget
+%IM% add-item check.db 21 2 Gadget
+%IM% add-measure check.db 100 Quantity number input Time Product
+%IM% set check.db 100 100 --at Time=2025,Product=Widget
+%IM% set check.db 100 120 --at Time=2026,Product=Widget
+crates\gui_cosmic\target\release\improv-cosmic.exe check.db
 ```
 
-Elsewhere: `cd crates/gui_cosmic && cargo run --locked --release --
-<a model>.db`, with a measure of numbers (the `check.db` above is
-Quantity over Time × Product, made by `C:\w-cwin\check\mkcheck.cmd`).
+(With `CARGO_TARGET_DIR` set, the binaries are under it instead.)
 
-Open Notepad and Word (or Excel; WordPad is gone in Windows 11 24H2).
+The grid shows Quantity: 2025 and 2026 by Widget and Gadget, four
+cells. Open Word or Excel, and Windows 11's Notepad (WordPad is gone
+since 24H2). Each step takes seconds:
 
-1. **Copy out (HTML).** In improv-cosmic, click a cell, Shift+click
-   another to select 2 × 2, press Ctrl+C. Paste into Word or Excel:
-   *expect a table* with the row and column headers. Paste into Notepad:
-   *expect the values*, tab-separated.
-2. **Paste in (HTML).** Select a 2 × 2 table in Word or Excel, Ctrl+C.
-   In improv-cosmic click an empty area of the grid's values, Ctrl+V:
-   *expect the four values* there, and Ctrl+Z to undo them as one step.
-3. **Drop in (text).** In Notepad type `1⇥2` (a tab between), select it,
-   and drag it onto an improv-cosmic cell: *expect the cursor to show a
-   copy (+)*, and `1` and `2` to land in that cell and the next.
-4. **Drop in (HTML).** Drag a selected 2 × 2 table from Word (or a table
-   in a browser) onto a cell: *expect the values* (headers skipped) at
-   that cell.
-5. **Drag out.** In improv-cosmic select 2 × 2, press inside the
-   selection and drag it into Word: *expect a table*. Drag it into
-   Notepad: *expect tab-separated values*. The status line says
-   "dragged 2 × 2". Press Escape mid-drag: *expect nothing dropped*.
-6. **Still works.** Drag a `.db` model file from Explorer onto the
-   window: *expect it to open*. Drag a category tile between Rows and
-   Columns: *expect the pivot* (in-window drag is unchanged). While
-   dragging out (step 5), the improv-cosmic window keeps redrawing.
+1. **Copy out.** Click the first value, Shift+click the last (all four),
+   Ctrl+C. Paste into Word or Excel: *a table with the year and product
+   labels*. Paste into Notepad: *the four values, tab-separated*.
+2. **Paste in (HTML).** In Excel type `7`, `8` in a row, select both,
+   Ctrl+C. In improv-cosmic click the first value, Ctrl+V: *7 and 8
+   replace the first row*. Ctrl+Z: *one undo puts both back*.
+3. **Drop in (text).** In Notepad type `5`, Tab, `6`, select it, and drag
+   it onto the first value: *the pointer shows a copy (+)*, and *5 and 6
+   land in the first row*. Notepad keeps its text.
+4. **Drop in (HTML).** Select two cells in Excel (or a two-cell table row
+   in Word or a browser) and drag the selection onto the second row's
+   first cell: *their values land there*, without labels.
+5. **Drag out.** Select all four cells, press inside the selection and
+   drag into Word or Excel: *a table*; into Notepad: *tab-separated
+   values*. The status line says *dragged 2 × 2*. Drag again and press
+   Escape before letting go: *nothing is dropped*. The window keeps
+   drawing during the drag.
+6. **Unchanged.** Drag `check.db` from Explorer onto the window: *it
+   opens*. Drag a category tile from Rows to Columns: *the grid pivots*.
+   A plain click inside a selection still selects that cell.
 
-Record the Windows build (`winver`), the apps used, and each step's
-result in the review note's "Windows gaps" table. Once all six pass,
-the two Windows release blockers are gone.
+Record the Windows build (`winver`), the applications used, and each
+step's result in the review note's "Windows gaps" table. When all six
+pass, the two Windows release blockers are gone: say so there, in
+`docs/src/cosmic-gui.md`'s Platforms table and in the crate's README.
