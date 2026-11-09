@@ -415,15 +415,20 @@ fn tls_failure(e: &postgres::Error) -> Option<String> {
     })
 }
 
+/// The words for a certificate that no trusted CA signed.
+const UNKNOWN_CA: &str =
+    "is not signed by a CA Improv trusts (sslrootcert=FILE names the CA; without it, the operating system's roots)";
+
 fn describe(e: &rustls::Error) -> String {
     use rustls::CertificateError as C;
     let rustls::Error::InvalidCertificate(c) = e else {
         return format!("TLS handshake failed: {e}");
     };
     let what = match c {
-        C::UnknownIssuer => "is not signed by a CA Improv trusts (sslrootcert=FILE names the \
-                             CA; without it, the operating system's roots)"
-            .into(),
+        // macOS's verifier reports an unknown CA as errSecNotTrusted (-67843),
+        // which rustls-platform-verifier passes on only as text.
+        C::UnknownIssuer => UNKNOWN_CA.into(),
+        C::Other(o) if o.to_string().ends_with(": -67843") => UNKNOWN_CA.into(),
         C::NotValidForNameContext {
             expected,
             presented,
@@ -891,6 +896,13 @@ pub(crate) mod tests {
             "the server's certificate is not valid yet"
         );
         assert_eq!(d(C::Revoked), "the server's certificate has been revoked");
+        // macOS: errSecNotTrusted, as rustls-platform-verifier passes it on.
+        let mac =
+            std::io::Error::other("\u{201c}test CA\u{201d} certificate is not trusted: -67843");
+        assert_eq!(
+            d(C::Other(rustls::OtherError(std::sync::Arc::new(mac)))),
+            d(C::UnknownIssuer)
+        );
         assert_eq!(
             d(C::BadSignature),
             "the server's certificate was refused: BadSignature"

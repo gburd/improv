@@ -475,6 +475,10 @@ fn unreachable(t: &Target, e: &ureq::Error) -> String {
     }
 }
 
+/// The words for a certificate that no trusted CA signed.
+const UNKNOWN_CA: &str =
+    "is not signed by a CA Improv trusts (sslrootcert=FILE in the URL names the CA; without it, the operating system's roots)";
+
 /// A TLS failure in words (as `improv_storage_pg::tls` says it).
 fn describe(e: &rustls::Error) -> String {
     use rustls::CertificateError as C;
@@ -482,9 +486,10 @@ fn describe(e: &rustls::Error) -> String {
         return format!("TLS handshake failed: {e}");
     };
     let what = match c {
-        C::UnknownIssuer => "is not signed by a CA Improv trusts (sslrootcert=FILE in the \
-                             URL names the CA; without it, the operating system's roots)"
-            .into(),
+        // macOS's verifier reports an unknown CA as errSecNotTrusted (-67843),
+        // which rustls-platform-verifier passes on only as text.
+        C::UnknownIssuer => UNKNOWN_CA.into(),
+        C::Other(o) if o.to_string().ends_with(": -67843") => UNKNOWN_CA.into(),
         C::NotValidForNameContext {
             expected,
             presented,
@@ -926,6 +931,13 @@ mod tests {
         use rustls::CertificateError as C;
         let d = |c| describe(&rustls::Error::InvalidCertificate(c));
         assert!(d(C::UnknownIssuer).contains("sslrootcert=FILE"));
+        // macOS: errSecNotTrusted, as rustls-platform-verifier passes it on.
+        let mac =
+            std::io::Error::other("\u{201c}test CA\u{201d} certificate is not trusted: -67843");
+        assert_eq!(
+            d(C::Other(rustls::OtherError(std::sync::Arc::new(mac)))),
+            d(C::UnknownIssuer)
+        );
         assert!(d(C::NotValidForName).contains("not valid for this host"));
         assert!(d(C::Expired).ends_with("has expired"));
         assert!(d(C::NotValidYet).ends_with("not valid yet"));
