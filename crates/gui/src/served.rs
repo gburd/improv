@@ -237,6 +237,11 @@ impl<S: ModelService> WebApp<S> {
             // A reply can change a panel's size: let the layout settle.
             ctx.request_repaint();
         }
+        self.drain_events(events);
+    }
+
+    /// Take in `events` (from the service).
+    fn drain_events(&mut self, events: Vec<Event>) {
         for ev in events {
             match ev {
                 Event::LoggedOut(e) => {
@@ -2076,6 +2081,385 @@ mod tests {
         app.change(Request::DeleteItem(99_999), What::Other);
         settle(&ctx, &mut app);
         assert!(app.status.contains("99999"), "{}", app.status);
+        std::fs::remove_file(path).ok();
+    }
+
+    fn at(v: &serde_json::Value) -> egui::Pos2 {
+        egui::pos2(
+            v["x"].as_f64().unwrap() as f32,
+            v["y"].as_f64().unwrap() as f32,
+        )
+    }
+
+    fn press(pos: egui::Pos2, pressed: bool, button: egui::PointerButton) -> egui::Event {
+        egui::Event::PointerButton {
+            pos,
+            button,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        }
+    }
+
+    /// A click (`n` presses) of `button` at `pos`, a frame each.
+    fn click(
+        ctx: &egui::Context,
+        app: &mut App,
+        pos: egui::Pos2,
+        n: usize,
+        b: egui::PointerButton,
+    ) {
+        frame(ctx, app, vec![egui::Event::PointerMoved(pos)]);
+        for _ in 0..n {
+            frame(ctx, app, vec![press(pos, true, b), press(pos, false, b)]);
+        }
+        settle(ctx, app);
+    }
+
+    /// The pointer paths, as a user drives them: a double-click edits a
+    /// cell (typed, Enter), a tile's context menu pivots, a page item is
+    /// picked, a browser link opens a sheet, a formula row is edited with
+    /// autocomplete (Tab) and a new formula typed on the last line.
+    #[test]
+    fn the_pointer_drives_cells_tiles_pages_links_and_formulas() {
+        let (ctx, mut app, path) = open("root");
+        settle(&ctx, &mut app);
+        let primary = egui::PointerButton::Primary;
+        // A double-click on a Quantity cell, a value typed, Enter.
+        let cell = (app.probe.cells.iter())
+            .find(|c| c["measure"] == "Quantity" && c["text"] == "100")
+            .cloned()
+            .expect("Quantity 100");
+        click(&ctx, &mut app, at(&cell), 2, primary);
+        assert!(app.wins.iter().any(|w| w.editing.is_some()), "editing");
+        frame(&ctx, &mut app, vec![egui::Event::Text("125".into())]);
+        frame(&ctx, &mut app, vec![key(egui::Key::Enter)]);
+        settle(&ctx, &mut app);
+        assert!(
+            texts(&app, "Revenue").contains(&"1250".to_string()),
+            "{}",
+            app.status
+        );
+        // A double-click and Esc leaves the cell as it was.
+        let cell = (app.probe.cells.iter())
+            .find(|c| c["measure"] == "Quantity" && c["text"] == "125")
+            .cloned()
+            .unwrap();
+        click(&ctx, &mut app, at(&cell), 2, primary);
+        frame(&ctx, &mut app, vec![key(egui::Key::Escape)]);
+        settle(&ctx, &mut app);
+        assert!(app.wins.iter().all(|w| w.editing.is_none()));
+        // A tile's context menu moves its category.
+        let tile = (app.probe.tiles.iter())
+            .find(|t| t["measure"] == "Quantity" && t["axis"] == "Rows")
+            .cloned()
+            .expect("a row tile");
+        let secondary = egui::PointerButton::Secondary;
+        click(&ctx, &mut app, at(&tile), 1, secondary);
+        // Its menu offers Move to Columns and Move to Pages: Esc closes it.
+        frame(&ctx, &mut app, vec![key(egui::Key::Escape)]);
+        // Region, as a page: add it to Quantity, then pick its other item.
+        app.change(
+            Request::AddCategory(NameReq {
+                name: "Region".into(),
+            }),
+            What::Other,
+        );
+        settle(&ctx, &mut app);
+        let region = app
+            .structure
+            .categories
+            .iter()
+            .find(|c| c.name == "Region")
+            .unwrap()
+            .id;
+        for n in ["North", "South"] {
+            app.change(
+                Request::AddItem(region, NameReq { name: n.into() }),
+                What::Other,
+            );
+            settle(&ctx, &mut app);
+        }
+        app.change(
+            Request::Define(DefineReq {
+                name: Some("Sales".into()),
+                categories: Some(vec![1, 2, region]),
+                ..Default::default()
+            }),
+            What::Other,
+        );
+        settle(&ctx, &mut app);
+        // The browser's link opens Sales' sheet.
+        app.browser = true;
+        settle(&ctx, &mut app);
+        let link = (app.probe.links.iter())
+            .find(|l| l["name"] == "Sales")
+            .cloned()
+            .expect("a Sales link");
+        click(&ctx, &mut app, at(&link), 1, primary);
+        assert!(app.wins.iter().any(|w| app
+            .structure
+            .measure(w.sheet.measure)
+            .is_some_and(|m| m.name == "Sales")));
+        app.browser = false;
+        settle(&ctx, &mut app);
+        if let Some(page) = (app.probe.pages.iter())
+            .find(|p| p["measure"] == "Sales")
+            .cloned()
+        {
+            click(&ctx, &mut app, at(&page), 1, primary);
+            if let Some(item) = (app.probe.pageitems.iter())
+                .find(|i| i["name"] == "South")
+                .cloned()
+            {
+                click(&ctx, &mut app, at(&item), 1, primary);
+            }
+        }
+        // A formula: the new line, typed with Tab completing a name.
+        let line = app.probe.newformula.clone().expect("the new-formula line");
+        click(&ctx, &mut app, at(&line), 1, primary);
+        frame(
+            &ctx,
+            &mut app,
+            vec![egui::Event::Text("Thrice = Rev".into())],
+        );
+        frame(&ctx, &mut app, vec![key(egui::Key::Tab)]);
+        frame(&ctx, &mut app, vec![egui::Event::Text(" * 3".into())]);
+        frame(&ctx, &mut app, vec![key(egui::Key::Enter)]);
+        settle(&ctx, &mut app);
+        assert!(
+            app.structure.measures.iter().any(|m| m.name == "Thrice"),
+            "{} / {:?}",
+            app.status,
+            app.new_formula
+        );
+        std::fs::remove_file(path).ok();
+    }
+
+    /// Key equivalents, the menu's own clicks, the browser's buttons, and
+    /// an existing formula edited in its row (Enter) and refused there.
+    #[test]
+    fn keys_the_menu_and_the_browsers_buttons() {
+        let (ctx, mut app, path) = open("root");
+        settle(&ctx, &mut app);
+        let primary = egui::PointerButton::Primary;
+        // Ctrl+Z: Undo, through the key path (nothing to undo yet).
+        let ctrl = |k| egui::Event::Key {
+            key: k,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::COMMAND,
+        };
+        frame(&ctx, &mut app, vec![ctrl(egui::Key::Z)]);
+        settle(&ctx, &mut app);
+        assert!(app.status.contains("undo"), "{}", app.status);
+        // The menu: its Edit row, then a submenu row, clicked.
+        let menu = ctx
+            .memory(|m| m.area_rect(crate::menu::menu_id()))
+            .expect("the menu");
+        let row = |n: f32| egui::pos2(menu.left() + 10.0, menu.top() + 24.0 + 20.0 * n);
+        click(&ctx, &mut app, row(1.5), 1, primary);
+        click(&ctx, &mut app, row(2.5), 1, primary);
+        // The browser's buttons, found where they are painted: each
+        // "rename" opens its prompt (Esc), each "delete" sends its request.
+        app.browser = true;
+        settle(&ctx, &mut app);
+        let painted = |ctx: &egui::Context, app: &mut App, text: &str| -> Vec<egui::Pos2> {
+            let out = ctx.test_ui(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, vec2(1280.0, 800.0))),
+                    ..Default::default()
+                },
+                |ui| app.frame(ui),
+            );
+            (out.shapes.iter())
+                .filter_map(|c| match &c.shape {
+                    egui::epaint::Shape::Text(t) if t.galley.text() == text => {
+                        Some(t.visual_bounding_rect().center())
+                    }
+                    _ => None,
+                })
+                .collect()
+        };
+        let renames = painted(&ctx, &mut app, "rename");
+        assert!(
+            renames.len() >= 3,
+            "a rename per measure, category and item"
+        );
+        for at in renames.iter().take(3) {
+            click(&ctx, &mut app, *at, 1, primary);
+            assert!(app.prompt.is_some(), "a rename prompt");
+            frame(&ctx, &mut app, vec![key(egui::Key::Escape)]);
+        }
+        let adds = painted(&ctx, &mut app, "+ item");
+        click(&ctx, &mut app, adds[0], 1, primary);
+        assert!(matches!(app.prompt, Some((Prompt::AddItem(_), _))));
+        frame(&ctx, &mut app, vec![key(egui::Key::Escape)]);
+        // The last "delete" is the last item's: deleted on the server.
+        let n = app
+            .structure
+            .categories
+            .iter()
+            .map(|c| c.items.len())
+            .sum::<usize>();
+        let deletes = painted(&ctx, &mut app, "delete");
+        click(&ctx, &mut app, *deletes.last().unwrap(), 1, primary);
+        let now = app
+            .structure
+            .categories
+            .iter()
+            .map(|c| c.items.len())
+            .sum::<usize>();
+        assert_eq!(now + 1, n, "{}", app.status);
+        // A formula row: click it, edit, Enter (refused, located).
+        app.formula = (Some(102), "Nope * 2".into(), None);
+        settle(&ctx, &mut app);
+        frame(&ctx, &mut app, vec![key(egui::Key::Enter)]);
+        settle(&ctx, &mut app);
+        std::fs::remove_file(path).ok();
+    }
+
+    /// Formula rows: a click picks one to edit, Enter on it saves, a
+    /// refusal is underlined under it, a measure whose formula does not
+    /// build says so; and a model whose first view opens at start.
+    #[test]
+    fn formula_rows_views_at_start_and_build_errors() {
+        let (ctx, mut app, path) = open("root");
+        settle(&ctx, &mut app);
+        let primary = egui::PointerButton::Primary;
+        let painted = |ctx: &egui::Context, app: &mut App, pre: &str| -> Option<egui::Pos2> {
+            let out = ctx.test_ui(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, vec2(1280.0, 800.0))),
+                    ..Default::default()
+                },
+                |ui| app.frame(ui),
+            );
+            (out.shapes.iter()).find_map(|c| match &c.shape {
+                egui::epaint::Shape::Text(t) if t.galley.text().starts_with(pre) => {
+                    Some(t.visual_bounding_rect().center())
+                }
+                _ => None,
+            })
+        };
+        // The key window is Revenue's: its formula row, clicked, then a
+        // refused text and Enter: the error shows under the row.
+        let rev = app
+            .wins
+            .iter()
+            .find(|w| w.sheet.measure == 102)
+            .map(|w| w.uid);
+        app.key = rev;
+        settle(&ctx, &mut app);
+        let row = painted(&ctx, &mut app, "Revenue = ").expect("Revenue's formula row");
+        click(&ctx, &mut app, row, 1, primary);
+        assert_eq!(app.formula.0, Some(102), "picked to edit");
+        // Into its edit (where the row was), then typed at the end.
+        click(&ctx, &mut app, row, 1, primary);
+        frame(&ctx, &mut app, vec![key(egui::Key::End)]);
+        frame(&ctx, &mut app, vec![egui::Event::Text(" + Nope".into())]);
+        frame(&ctx, &mut app, vec![key(egui::Key::Enter)]);
+        settle(&ctx, &mut app);
+        assert!(app.formula.2.is_some(), "{}", app.status);
+        // A formula that no longer builds: its measure says so.
+        let p = path.to_str().unwrap();
+        let mut s = improv_store::Store::open(p).unwrap();
+        let mut m = s.load_model().unwrap();
+        m.add_view(improv_core_model::View::from_matrices(
+            improv_core_model::ViewId(7),
+            Name("start".into()),
+            improv_core_model::MatrixPlacement::new(MeasureId(101)),
+            vec![],
+        ));
+        s.save_model(&m).unwrap();
+        drop(s);
+        // A fresh app opens on the saved view.
+        let (ctx2, _, _) = (egui::Context::default(), (), ());
+        crate::theme::install_fonts(&ctx2);
+        let policy = improv_service::cedar::CedarPolicy::new(p, improv_policy::Channel::Server);
+        let a = improv_service::authority::Authority::with_policy(p, Box::new(policy)).unwrap();
+        let svc = improv_service::local::Local::new(a, improv_policy::Principal::user("root"));
+        let mut fresh = WebApp::new(&ctx2, svc, Some(String::new()));
+        settle(&ctx2, &mut fresh);
+        assert_eq!(fresh.current_view, Some(7), "{}", fresh.status);
+        assert_eq!(fresh.wins.len(), 1);
+        std::fs::remove_file(path).ok();
+    }
+
+    /// A tile dragged to another gutter pivots the sheet (layout only);
+    /// a refused login shows the panel with the reason.
+    #[test]
+    fn a_dragged_tile_pivots_and_a_refused_token_asks_again() {
+        let (ctx, mut app, path) = open("root");
+        settle(&ctx, &mut app);
+        let tile = (app.probe.tiles.iter())
+            .find(|t| t["measure"] == "Quantity" && t["axis"] == "Rows")
+            .cloned()
+            .expect("a row tile");
+        let zone = (app.probe.zones.iter())
+            .find(|z| z["measure"] == "Quantity" && z["axis"] == "Pages")
+            .cloned()
+            .expect("the page gutter");
+        let (from, to) = (at(&tile), at(&zone));
+        let b = egui::PointerButton::Primary;
+        frame(&ctx, &mut app, vec![egui::Event::PointerMoved(from)]);
+        frame(&ctx, &mut app, vec![press(from, true, b)]);
+        for i in 1..=8 {
+            let p = from + (to - from) * (i as f32 / 8.0);
+            frame(&ctx, &mut app, vec![egui::Event::PointerMoved(p)]);
+        }
+        frame(&ctx, &mut app, vec![press(to, false, b)]);
+        settle(&ctx, &mut app);
+        let q = app.wins.iter().find(|w| w.sheet.measure == 101).unwrap();
+        assert!(
+            !q.sheet.pages().is_empty(),
+            "dropped on the pages: {:?}",
+            q.sheet
+        );
+        // The status bar's Model Browser button opens the browser.
+        let b2 = app.probe.browserbutton.clone().expect("the button");
+        assert!(!app.browser);
+        click(&ctx, &mut app, at(&b2), 1, b);
+        assert!(app.browser, "the button opens the browser");
+        // A tile's context menu: a secondary press held over it, then its
+        // "Move to Columns" row.
+        let tile = (app.probe.tiles.iter())
+            .find(|t| t["measure"] == "Revenue" && t["axis"] == "Rows")
+            .cloned()
+            .expect("Revenue's row tile");
+        let r2 = egui::PointerButton::Secondary;
+        frame(&ctx, &mut app, vec![egui::Event::PointerMoved(at(&tile))]);
+        frame(&ctx, &mut app, vec![press(at(&tile), true, r2)]);
+        frame(&ctx, &mut app, vec![press(at(&tile), false, r2)]);
+        let out = ctx.test_ui(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, vec2(1280.0, 800.0))),
+                ..Default::default()
+            },
+            |ui| app.frame(ui),
+        );
+        let row = (out.shapes.iter()).find_map(|c| match &c.shape {
+            egui::epaint::Shape::Text(t) if t.galley.text() == "Move to Columns" => {
+                Some(t.visual_bounding_rect().center())
+            }
+            _ => None,
+        });
+        if let Some(row) = row {
+            click(&ctx, &mut app, row, 1, b);
+            let w = app.wins.iter().find(|w| w.sheet.measure == 102).unwrap();
+            assert_eq!(w.sheet.cols().len(), 2, "{:?}", w.sheet);
+        }
+        // The service refuses the token: the login panel says why.
+        app.drain_events(vec![Event::LoggedOut("invalid bearer token".into())]);
+        frame(&ctx, &mut app, vec![]);
+        assert_eq!(app.title, "improv-web: log in");
+        assert!(app.status.contains("refused"), "{}", app.status);
+        app.drain_events(vec![Event::LoggedOut("missing bearer token".into())]);
+        assert!(
+            app.status.contains("needs an access token"),
+            "{}",
+            app.status
+        );
         std::fs::remove_file(path).ok();
     }
 
