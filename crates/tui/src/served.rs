@@ -126,6 +126,12 @@ impl<S: ModelService> Served<S> {
     fn reply(&mut self, why: Pending, r: Result<Response, Failure>) {
         match (why, r) {
             (Pending::Structure, Ok(Response::Structure(s))) => self.adopt(s),
+            // No longer allowed to open it (a policy changed): nothing of
+            // it stays on screen.
+            (Pending::Structure, Err(f)) => {
+                self.adopt(Structure::default());
+                self.status = f.error;
+            }
             (Pending::Capabilities, Ok(Response::Capabilities(c))) => self.caps = Some(c),
             (Pending::Capabilities, Err(_)) => self.caps = None,
             (Pending::Window(m, w), Ok(Response::Cells(c))) => {
@@ -700,6 +706,69 @@ mod tests {
             (CategoryId(3), ItemId(31)),
         ]);
         assert_eq!(st.input(MeasureId(101), &at), Some(&Value::Number(7.0)));
+        std::fs::remove_file(path).ok();
+    }
+
+    /// The paths around the grid: a value that does not parse, an empty
+    /// commit clearing a cell, Esc in an edit and in the token prompt, a
+    /// refused token asking again, redo, a release event, a model with
+    /// nothing the user may see.
+    #[test]
+    fn edits_tokens_and_empty_models() {
+        let (mut app, path) = open("ann", Some(String::new()));
+        let _ = run_keys(&mut app, vec![key(KeyCode::Char(']'))]);
+        // A value of the wrong shape: said here, nothing sent.
+        let mut ev = chars("eabc");
+        ev.push(key(KeyCode::Enter));
+        let screen = run_keys(&mut app, ev).join("\n");
+        assert!(screen.contains("not a number"), "{screen}");
+        // Esc leaves an edit; an empty commit clears the cell.
+        let _ = run_keys(&mut app, vec![key(KeyCode::Char('e')), key(KeyCode::Esc)]);
+        let mut ev = chars("e");
+        ev.extend([key(KeyCode::Backspace), key(KeyCode::Enter)]);
+        let screen = run_keys(&mut app, ev).join("\n");
+        assert!(screen.contains("1 cell set"), "{screen}");
+        // Undo, redo (Ctrl+R), and a key release does nothing.
+        let ctrl_r = Event::Key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL));
+        let mut release = KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE);
+        release.kind = KeyEventKind::Release;
+        let _ = run_keys(
+            &mut app,
+            vec![key(KeyCode::Char('u')), ctrl_r, Event::Key(release)],
+        );
+        assert!(!app.quit);
+        // The server refuses the token: the prompt again, Esc quits.
+        app.svc.authenticate(String::new());
+        app.drain();
+        app.status.clear();
+        app.reply(
+            Pending::Other,
+            Err(Failure {
+                error: "refused".into(),
+                ..Default::default()
+            }),
+        );
+        assert_eq!(app.status, "refused");
+        app.token = Some(LineEdit::default());
+        let screen = run_keys(&mut app, vec![]).join("\n");
+        assert!(screen.contains("token> "), "{screen}");
+        let _ = run_keys(&mut app, vec![key(KeyCode::Esc)]);
+        assert!(app.quit);
+        std::fs::remove_file(path).ok();
+        // A user the policies do not let open the model: the refusal is
+        // said, no measure shows, and the keys are safe.
+        let (mut app, path) = open("nobody", Some(String::new()));
+        let p = path.to_str().unwrap();
+        improv_store::Store::open(p)
+            .unwrap()
+            .save_policies(Some((
+                r#"permit (principal == Improv::User::"ann", action, resource);"#,
+                "",
+            )))
+            .unwrap();
+        app.reload();
+        let screen = run_keys(&mut app, chars("e[pm")).join("\n");
+        assert!(screen.contains("no measure you may see"), "{screen}");
         std::fs::remove_file(path).ok();
     }
 

@@ -272,6 +272,12 @@ impl<S: ModelService> WebApp<S> {
                 self.login = Login::In;
                 self.adopt(s);
             }
+            // No longer allowed to open it (a policy changed): nothing of
+            // it stays on screen.
+            (Pending::Structure, Err(f)) if self.login == Login::In => {
+                self.adopt(Structure::default());
+                self.status = f.error;
+            }
             (Pending::Capabilities, Ok(Response::Capabilities(c))) => self.caps = Some(c),
             // An older server without the route: no hints, nothing greyed.
             (Pending::Capabilities, Err(_)) => self.caps = None,
@@ -1913,6 +1919,221 @@ mod tests {
         settle(&ctx, &mut app);
         assert!(app.probe.browserbutton.is_some() && app.probe.newformula.is_some());
         assert!(app.probe.live && !app.probe.tiles.is_empty() && !app.probe.zones.is_empty());
+        std::fs::remove_file(path).ok();
+    }
+
+    fn key(k: egui::Key) -> egui::Event {
+        egui::Event::Key {
+            key: k,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }
+    }
+
+    /// Answer the open prompt with `text` and Enter, over a few frames.
+    fn answer(ctx: &egui::Context, app: &mut App, text: &str) {
+        assert!(app.prompt.is_some(), "a prompt is open");
+        frame(ctx, app, vec![]);
+        frame(ctx, app, vec![egui::Event::Text(text.into())]);
+        frame(ctx, app, vec![key(egui::Key::Enter)]);
+        settle(ctx, app);
+    }
+
+    /// Every command the server view has, through the menu's commands, its
+    /// prompts and the model browser, as the unrestricted user: each
+    /// reaches the server, and its answer shows.
+    #[test]
+    fn every_command_reaches_the_server() {
+        let (ctx, mut app, path) = open("root");
+        settle(&ctx, &mut app);
+        app.browser = true;
+        settle(&ctx, &mut app);
+        assert!(
+            !app.probe.links.is_empty(),
+            "the browser lists the measures"
+        );
+        // Prompts: a category, an item, an input measure, renames, a view.
+        app.run(&ctx, Command::AddCategory);
+        answer(&ctx, &mut app, "Region");
+        assert!(app.structure.categories.iter().any(|c| c.name == "Region"));
+        app.key = app.wins.first().map(|w| w.uid);
+        app.run(&ctx, Command::AddItem);
+        answer(&ctx, &mut app, "Gizmo");
+        let has = |app: &App, n: &str| {
+            (app.structure.categories.iter()).any(|c| c.items.iter().any(|i| i.name == n))
+        };
+        assert!(has(&app, "Gizmo"), "{}", app.status);
+        app.run(&ctx, Command::AddInputMeasure);
+        answer(&ctx, &mut app, "Cost");
+        assert!(app.structure.measures.iter().any(|m| m.name == "Cost"));
+        app.run(&ctx, Command::Rename);
+        // It opens on the measure's name; typed over here.
+        let Some((Prompt::RenameMeasure(m), old)) = app.prompt.clone() else {
+            panic!("{:?}", app.prompt.as_ref().map(|p| p.0));
+        };
+        assert_eq!(
+            Some(old.as_str()),
+            app.structure.measure(m).map(|x| x.name.as_str())
+        );
+        app.prompt = Some((Prompt::RenameMeasure(m), String::new()));
+        answer(&ctx, &mut app, "Unit Price");
+        assert!(app
+            .structure
+            .measures
+            .iter()
+            .any(|m| m.name == "Unit Price"));
+        for (p, text) in [
+            (Prompt::RenameCategory(1), "Year"),
+            (Prompt::RenameItem(10), "Y2025"),
+        ] {
+            app.prompt = Some((p, String::new()));
+            answer(&ctx, &mut app, text);
+        }
+        assert_eq!(app.structure.categories[0].name, "Year");
+        app.run(&ctx, Command::SaveView);
+        answer(&ctx, &mut app, "mine");
+        assert!(app.structure.views.iter().any(|v| v.name.0 == "mine"));
+        // Esc cancels a prompt.
+        app.run(&ctx, Command::AddCategory);
+        frame(&ctx, &mut app, vec![]);
+        frame(&ctx, &mut app, vec![key(egui::Key::Escape)]);
+        assert!(app.prompt.is_none());
+        // Views, pivots, formats, undo and redo, delete.
+        app.run(&ctx, Command::OpenView(0));
+        assert_eq!(app.status, "view: mine");
+        app.run(&ctx, Command::PivotRotate);
+        app.run(&ctx, Command::RemoveMatrix);
+        app.key = app.wins.first().map(|w| w.uid);
+        app.run(&ctx, Command::Decimals(Some(2)));
+        settle(&ctx, &mut app);
+        app.run(&ctx, Command::Grouping);
+        settle(&ctx, &mut app);
+        let m = app.focused().map(|w| w.sheet.measure).unwrap();
+        assert!(app
+            .structure
+            .measure(m)
+            .unwrap()
+            .format
+            .is_some_and(|f| f.grouping));
+        app.run(&ctx, Command::Undo);
+        settle(&ctx, &mut app);
+        app.run(&ctx, Command::Redo);
+        settle(&ctx, &mut app);
+        app.run(&ctx, Command::ModelBrowser);
+        app.run(&ctx, Command::ModelBrowser);
+        app.run(&ctx, Command::UserGuide);
+        app.run(&ctx, Command::Hide);
+        // A new formula with a located error, then a good one.
+        app.change(
+            Request::Define(DefineReq {
+                definition: Some("Twice = Revenu * 2".into()),
+                ..Default::default()
+            }),
+            What::Formula(None),
+        );
+        settle(&ctx, &mut app);
+        let d = app.new_formula.1.clone().expect("a located error");
+        assert!(d.message.contains("Revenu"), "{d:?}");
+        app.change(
+            Request::Define(DefineReq {
+                definition: Some("Twice = Revenue * 2".into()),
+                ..Default::default()
+            }),
+            What::Formula(None),
+        );
+        settle(&ctx, &mut app);
+        assert!(
+            app.new_formula.1.is_none() && app.structure.measures.iter().any(|m| m.name == "Twice")
+        );
+        // An existing formula's edit, refused, located.
+        app.change(
+            Request::UpdateMeasure(
+                102,
+                UpdateMeasureReq {
+                    formula: Some("Nope * 2".into()),
+                    ..Default::default()
+                },
+            ),
+            What::Formula(Some(102)),
+        );
+        settle(&ctx, &mut app);
+        assert!(app.formula.2.is_some(), "{}", app.status);
+        // The formula pane, with a measure selected.
+        app.formula = (Some(102), "Price * Quantity".into(), None);
+        settle(&ctx, &mut app);
+        app.run(&ctx, Command::Delete);
+        settle(&ctx, &mut app);
+        // A cell typed wrong is refused here, before any request.
+        let q = app.structure.measure(101).cloned().unwrap();
+        app.commit_cell(&q, vec![(1, 10), (2, 20)], "abc");
+        assert!(app.status.starts_with("not a number"), "{}", app.status);
+        app.commit_cell(&q, vec![], "1");
+        app.commit_cell(&q, vec![(1, 10), (2, 20)], "");
+        settle(&ctx, &mut app);
+        // A refusal of any other request shows as is.
+        app.change(Request::DeleteItem(99_999), What::Other);
+        settle(&ctx, &mut app);
+        assert!(app.status.contains("99999"), "{}", app.status);
+        std::fs::remove_file(path).ok();
+    }
+
+    /// A policy change that closes the model to the user: on the next
+    /// re-read nothing of it stays on screen, and the refusal is said.
+    #[test]
+    fn a_user_shut_out_sees_nothing_of_the_model() {
+        let (ctx, mut app, path) = open("ann");
+        settle(&ctx, &mut app);
+        assert!(!app.structure.measures.is_empty());
+        improv_store::Store::open(path.to_str().unwrap())
+            .unwrap()
+            .save_policies(Some((
+                r#"permit (principal == Improv::User::"root", action, resource);"#,
+                "",
+            )))
+            .unwrap();
+        app.reload();
+        settle(&ctx, &mut app);
+        assert!(app.structure.measures.is_empty() && app.structure.categories.is_empty());
+        assert!(app.wins.is_empty(), "no window is left");
+        assert!(
+            !app.status.is_empty() && app.status != "ready",
+            "{}",
+            app.status
+        );
+        std::fs::remove_file(path).ok();
+    }
+
+    /// Without a token the app asks; a refused one says so and asks again.
+    #[test]
+    fn the_login_panel_asks_and_says_why() {
+        let (ctx, _, path) = open("root");
+        let p = path.to_str().unwrap();
+        let policy = improv_service::cedar::CedarPolicy::new(p, improv_policy::Channel::Server);
+        let a = improv_service::authority::Authority::with_policy(p, Box::new(policy)).unwrap();
+        let svc = improv_service::local::Local::new(a, improv_policy::Principal::user("root"));
+        let mut app = WebApp::new(&ctx, svc, None);
+        frame(&ctx, &mut app, vec![]);
+        assert_eq!(app.title, "improv-web: log in");
+        frame(&ctx, &mut app, vec![egui::Event::Text("tok".into())]);
+        frame(&ctx, &mut app, vec![key(egui::Key::Enter)]);
+        settle(&ctx, &mut app);
+        assert_eq!(app.title, "improv-web: ready");
+        // The service says the token was refused: back to the panel.
+        app.login = Login::In;
+        let refused = [Event::LoggedOut("invalid bearer token".into())];
+        for e in refused {
+            match e {
+                Event::LoggedOut(m) => {
+                    app.login = Login::Asking;
+                    app.status = format!("That token was refused ({m}).");
+                }
+                _ => unreachable!(),
+            }
+        }
+        frame(&ctx, &mut app, vec![]);
+        assert_eq!(app.title, "improv-web: log in");
         std::fs::remove_file(path).ok();
     }
 }
