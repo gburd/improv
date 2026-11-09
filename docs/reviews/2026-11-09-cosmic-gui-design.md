@@ -898,5 +898,9 @@ the redesign.
     `SPDX-License-Identifier: GPL-3.0-only` header. The crate's LICENSE is
     MPL-2.0 and `deny.toml` clarifies it as MPL-2.0. The file is 49 lines
     of i18n-embed loader boilerplate and is likely a template leftover.
-    Ask upstream to relicense or confirm before the next release? This
-    affects today's binary, not only the redesign.
+    **Decided (2026-11-09):** asked upstream,
+    [pop-os/libcosmic#1500](https://github.com/pop-os/libcosmic/issues/1500);
+    until it is answered, every release build of improv-cosmic vendors
+    libcosmic with that one file replaced by Improv's own MIT OR
+    Apache-2.0 implementation (`crates/gui_cosmic/release/`), and CI scans
+    the vendored crates for GPL headers.
