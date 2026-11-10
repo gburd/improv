@@ -357,14 +357,24 @@ try:
                 if attempt == 2:
                     raise
                 print(f"the click on Sales opened nothing; again (attempt {attempt + 2})")
-        pages = json.loads(a.js("document.body.dataset.pages || '[]'"))
-        pick = next(p for p in pages if p["measure"] == "Sales")
-        a.click(pick["x"], pick["y"])
-        # The list's first frames still lay out: click South where it settles.
-        south = a.settled(lambda: next((o for o in json.loads(a.js("document.body.dataset.pageitems || '[]'"))
-                                        if o["name"] == "South"), None), "South in the page list")
-        a.click(south["x"], south["y"])
-        a.wait(lambda: (c := a.cell("Sales", [[1, 10], [2, 20], [3, 31]])) and c["text"] == "9", "South's page")
+        # The list's first frames still lay out: click South where it
+        # settles, and pick again (at most three times) when the click was
+        # lost, as for the browser's link above.
+        south_page = lambda: (c := a.cell("Sales", [[1, 10], [2, 20], [3, 31]])) and c["text"] == "9"
+        for attempt in range(3):
+            pages = json.loads(a.js("document.body.dataset.pages || '[]'"))
+            pick = next(p for p in pages if p["measure"] == "Sales")
+            a.click(pick["x"], pick["y"])
+            south = a.settled(lambda: next((o for o in json.loads(a.js("document.body.dataset.pageitems || '[]'"))
+                                            if o["name"] == "South"), None), "South in the page list")
+            a.click(south["x"], south["y"])
+            try:
+                a.wait(south_page, "South's page", secs=3)
+                break
+            except SystemExit:
+                if attempt == 2:
+                    raise
+                print(f"the pick of South showed nothing; again (attempt {attempt + 2})")
         print("paged: Sales on Region = South shows its cells")
 
     # 9: a screen reader's view, in a session of its own.
