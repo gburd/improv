@@ -2545,6 +2545,64 @@ mod tests {
         std::fs::remove_file(path).ok();
     }
 
+    /// The commands that act on the key window, with none: nothing happens,
+    /// nothing panics, and no prompt opens.
+    #[test]
+    fn commands_without_a_window_do_nothing() {
+        let (ctx, mut app, path) = open("root");
+        settle(&ctx, &mut app);
+        let (measures, views) = (app.structure.measures.len(), app.structure.views.len());
+        app.key = None;
+        for w in &mut app.wins {
+            w.open = false;
+        }
+        for c in [
+            Command::AddItem,
+            Command::Rename,
+            Command::Delete,
+            Command::AddMatrix,
+            Command::RemoveMatrix,
+            Command::PivotRotate,
+            Command::OpenView(99),
+        ] {
+            app.run(&ctx, c);
+        }
+        settle(&ctx, &mut app);
+        assert!(
+            app.prompt.is_none(),
+            "{:?}",
+            app.prompt.as_ref().map(|p| p.0)
+        );
+        assert_eq!(app.structure.measures.len(), measures);
+        assert_eq!(app.structure.views.len(), views);
+        std::fs::remove_file(path).ok();
+    }
+
+    /// A tile's keyboard menu: Enter on a focused tile opens Move to…,
+    /// focused on its first row; Enter there moves the category, and an
+    /// unknown view opens nothing.
+    #[test]
+    fn a_tiles_keyboard_menu_moves_its_category() {
+        let (ctx, mut app, path) = open("root");
+        settle(&ctx, &mut app);
+        let w = (app.wins.iter()).find(|w| w.sheet.measure == 101).unwrap();
+        let (uid, time) = (w.uid, *w.sheet.rows().first().expect("a row category"));
+        app.key = Some(uid);
+        ctx.memory_mut(|m| m.request_focus(egui::Id::unique(("tile", uid, time))));
+        settle(&ctx, &mut app);
+        frame(&ctx, &mut app, vec![key(egui::Key::Enter)]);
+        settle(&ctx, &mut app);
+        // The menu's first row has the keyboard: Enter moves Time there.
+        frame(&ctx, &mut app, vec![key(egui::Key::Enter)]);
+        settle(&ctx, &mut app);
+        let w = (app.wins.iter()).find(|w| w.uid == uid).unwrap();
+        assert!(!w.sheet.rows().contains(&time), "{:?}", w.sheet);
+        let views = app.structure.views.len();
+        app.open_view(9999);
+        assert_eq!(app.structure.views.len(), views);
+        std::fs::remove_file(path).ok();
+    }
+
     /// A policy change that closes the model to the user: on the next
     /// re-read nothing of it stays on screen, and the refusal is said.
     #[test]
