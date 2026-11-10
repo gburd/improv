@@ -64,14 +64,20 @@ stages 1-4 in 0.13).
   moves with inputs applied or results written); storage_pg's `Listener` /
   `Store::listen`: the GUI and TUI listen for Postgres in place of H9
   polling, and take others' input cells live when nothing is unsaved.
-- **NEXT:** the COSMIC GUI's remote service (step 4, not started: its
-  window holds a whole Model + Snapshot and sends whole-structure
-  `Restructure`s, which `/v1` has no route for); road-to-1.0 I4 (the full
-  desktop app over the model service). Web accessibility is on main
-  (`0a11316`..`1024736`, see the I2 row and
-  `docs/reviews/2026-11-08-web-accessibility.md`); left: a run with a
-  real screen reader. The COSMIC Windows blockers are worked around on
-  main (`d216a55`); left: the desktop checklist run by a person.
+- **Also on main for 0.15:** Mentat 1.20.0 with rusqlite 0.41 (bundled
+  SQLite 3.54.1, RUSTSEC-2026-0459; `fresh_for_write` gone,
+  `docs/reviews/2026-11-09-mentat-1.20-upgrade.md`); the libcosmic release
+  patch (`crates/gui_cosmic/release/`: our own MIT OR Apache-2.0
+  `localize.rs` replaces libcosmic's GPL one in release builds,
+  pop-os/libcosmic#1500; the licence scan of vendored crates in CI, LGPL
+  allowed unmodified, `license-allow.txt`); the web GUI movie
+  (`docs/demo/web-movie.sh`); CI fixes (stale DuckDB sources, macOS's
+  untrusted-CA error, Quit/Hide in the browser, flaky e2e picks).
+- **NEXT:** the improv-cosmic redesign
+  (`docs/reviews/2026-11-09-cosmic-gui-design.md`, waiting on the
+  maintainer's answers to its section (j)); the COSMIC GUI's remote
+  service (I4). Before any release: re-record the COSMIC movie
+  (CONTRIBUTING.md, Releasing step 2).
 - **Rule for every front end:** a client under a read policy never
   computes derived values itself; it reads them, and what-ifs, from the
   authority. Hidden is absent. Versions are opaque. (`improv_client`'s
