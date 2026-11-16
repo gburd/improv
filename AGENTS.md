@@ -148,7 +148,10 @@ is rustc **1.97** (`rust-version` in the workspace; CI has a 1.97 job).
   coverage gate, the GUI screenshot golden, `pg_improv` on PG 15–18 via
   `ci/pg_improv.sh`, and `test-duckdb` via `ci/duckdb_improv.sh`); `docs.yml` (guide + API on every push to main,
   deployed to GitHub Pages, https://gburd.github.io/improv/); `release.yml`
-  (on a `v*` tag: qualify on four targets, all four binaries per target,
+  (on a `v*` tag: qualify on five targets (Windows x64 and native arm64
+  on `windows-11-arm`), all four binaries per target, the Windows `.msi`
+  per architecture (`ci/windows-msi.ps1`, WiX 7) install-tested by
+  `msi-test` (`ci/windows-msi-test.ps1`, dry runs too),
   pg_improv packages per PG major, every Linux artifact built in
   manylinux_2_28 (`ci/manylinux.sh`; glibc ≤ 2.28, GLIBCXX ≤ 3.4.25,
   checked by `ci/glibc-floor.sh`), the `.deb`/`.rpm` install-tested on

@@ -194,7 +194,8 @@ branch (it needs a `PAGES_PUSH_TOKEN` secret).
    `gh workflow run release.yml -R gburd/improv --ref main` builds and
    install-tests everything a tag would and publishes nothing.
 4. On the GitHub mirror, `release.yml` builds and qualifies the binaries
-   and pg_improv packages, makes the GitHub Release, publishes to
+   and pg_improv packages, builds the Windows installers and install-tests
+   them (below), makes the GitHub Release, publishes to
    [PGXN](https://pgxn.org/dist/pg_improv/) (`pgxn.yml`), and drafts the
    postgresql.org news for an X.Y.0 release (`ci/announce.sh`).
 5. Check the run succeeded and that https://api.pgxn.org/dist/pg_improv.json
@@ -217,6 +218,32 @@ ci/glibc-floor.sh 2.28 3.4.25 target/manylinux/x86_64-unknown-linux-gnu/release/
 ci/packages.sh bin X.Y.Z <staging-dir> pkg        # and `pg` per major; needs nfpm
 ci/install-test.sh X.Y.Z pkg                      # every distribution, or name some
 ```
+
+Windows builds on GitHub's x64 (`windows-latest`) and native Arm
+(`windows-11-arm`) runners, each testing the workspace on its own
+architecture. After the zip, each builds its installer,
+`improv-X.Y.Z-<x64|arm64>.msi`, from the zip's programs and documents with
+`ci/windows-msi.ps1` (the WiX Toolset 7.0.1, downloaded pinned by SHA-256;
+the source is `packaging/windows/improv.wxs`). The `msi-test` job then
+installs it on a clean runner of the same architecture
+(`ci/windows-msi-test.ps1`: quietly and per user; the files, the Start
+menu shortcut, the PATH from a new shell, `improv --version`, an upgrade
+to a build one patch version newer, a refused downgrade, and a clean
+uninstall), on dry runs as on tags, and the release waits for it. The
+installers are not signed yet (SmartScreen warns). WiX 7 requires
+accepting its Open Source Maintenance Fee EULA; the maintainer accepted it
+for Improv, which is exempt from the fee, and the script passes
+`-acceptEula wix7`. To build and test one on a Windows machine with the
+.NET 8 runtime or later, from the unpacked zip:
+
+```powershell
+ci/windows-msi.ps1 -Version X.Y.Z -Arch arm64 -Stage improv-vX.Y.Z-aarch64-pc-windows-msvc -Out dist
+ci/windows-msi.ps1 -Version X.Y.Z+1 -Arch arm64 -Stage improv-vX.Y.Z-aarch64-pc-windows-msvc -Out newer
+ci/windows-msi-test.ps1 -Msi dist/improv-X.Y.Z-arm64.msi -Newer newer/improv-X.Y.Z+1-arm64.msi
+```
+
+(`X.Y.Z+1` meaning the patch version plus one.) The test installs for the
+user running it, so run it as a user without Improv installed.
 
 The `release` job runs `ci/release-attest.sh` on the downloaded artifacts
 before it publishes. The script writes a CycloneDX SBOM per binary and

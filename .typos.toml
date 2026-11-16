@@ -35,3 +35,5 @@ AVERAGEIFS = "AVERAGEIFS"
 TTEST = "TTEST"
 ODF = "ODF"
 EXTENDIBLE = "EXTENDIBLE"
+# wix msi validate's -sice: suppress an ICE (ci/windows-msi.ps1).
+sice = "sice"

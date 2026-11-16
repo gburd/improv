@@ -38,6 +38,13 @@ jobs:
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             test: true
+            msi: x64
+          # Native Windows on Arm (GitHub's Arm-hosted Windows 11 image):
+          # built and tested on arm64, not cross-compiled.
+          - os: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            test: true
+            msi: arm64
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -112,11 +119,79 @@ jobs:
           else
             tar czf "dist/${staging}.tar.gz" "$staging"
           fi
+          echo "STAGING=$staging" >> "$GITHUB_ENV"
+          echo "VERSION=${tag#v}" >> "$GITHUB_ENV"
+      # The installer, improv-X.Y.Z-<x64|arm64>.msi, from the programs and
+      # documents just zipped (ci/windows-msi.ps1, WiX 7). Also one of a
+      # patch version more from the same programs, for msi-test's upgrade;
+      # it is uploaded apart and never released.
+      - name: Windows installer (.msi)
+        if: matrix.msi
+        working-directory: improv
+        shell: pwsh
+        env:
+          ARCH: ${{ matrix.msi }}
+        run: |
+          ci/windows-msi.ps1 -Version $env:VERSION -Arch $env:ARCH -Stage $env:STAGING -Out dist
+          $v = [version]$env:VERSION
+          ci/windows-msi.ps1 -Version "$($v.Major).$($v.Minor).$($v.Build + 1)" -Arch $env:ARCH `
+            -Stage $env:STAGING -Out msi-newer
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dist-${{ matrix.target }}
           path: improv/dist/*
           if-no-files-found: error
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: matrix.msi
+        with:
+          name: msi-newer-${{ matrix.msi }}
+          path: improv/msi-newer/*.msi
+          if-no-files-found: error
+
+  # Each Windows installer, installed, run, upgraded and uninstalled on a
+  # clean runner of its architecture (ci/windows-msi-test.ps1): per user,
+  # quiet (/qn), every step logged. On every tag and every dry run, and the
+  # release waits for it.
+  msi-test:
+    name: Windows installer test (${{ matrix.arch }})
+    needs: [qualify]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            arch: x64
+            target: x86_64-pc-windows-msvc
+          - os: windows-11-arm
+            arch: arm64
+            target: aarch64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist-${{ matrix.target }}
+          path: dist
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: msi-newer-${{ matrix.arch }}
+          path: newer
+      - name: Install, run, upgrade, refuse a downgrade, uninstall
+        shell: pwsh
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          $msi = Get-Item "dist/improv-*-$env:ARCH.msi"
+          $newer = Get-Item "newer/improv-*-$env:ARCH.msi"
+          ci/windows-msi-test.ps1 -Msi $msi -Newer $newer -Logs "$env:RUNNER_TEMP/msi-logs"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: msi-test-logs-${{ matrix.arch }}
+          path: ${{ runner.temp }}/msi-logs
 
   # The extension, per Postgres major, as
   # pg_improv-<ver>-pg<N>-x86_64-linux.tar.gz: the .so, control file,
@@ -251,7 +326,7 @@ jobs:
   attest-dry-run:
     name: SBOMs and SHA256SUMS (dry run, unsigned)
     if: ${{ !startsWith(github.ref, 'refs/tags/') }}
-    needs: [qualify, extension, build-duckdb-ext, packages]
+    needs: [qualify, extension, build-duckdb-ext, packages, msi-test]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -274,7 +349,7 @@ jobs:
   release:
     name: GitHub Release
     if: startsWith(github.ref, 'refs/tags/')
-    needs: [qualify, extension, build-duckdb-ext, packages]
+    needs: [qualify, extension, build-duckdb-ext, packages, msi-test]
     runs-on: ubuntu-latest
     permissions:
       contents: write

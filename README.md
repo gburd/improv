@@ -87,8 +87,13 @@ other browsers live.
 ## Install
 
 Pre-built CLI, TUI, GUI and server binaries for Linux, macOS and Windows are
-attached to each [release](https://github.com/gburd/improv/releases). To
-build from source you need Rust **1.97** or newer:
+attached to each [release](https://github.com/gburd/improv/releases), with
+packages: `.deb` and `.rpm` for Linux, a Homebrew formula for macOS, and a
+Windows installer for x64 and native Arm (`improv-X.Y.Z-x64.msi`,
+`improv-X.Y.Z-arm64.msi`). The installer is per user (no administrator
+needed) and not yet signed, so SmartScreen may warn before it runs; see
+[Install a release](https://gburd.github.io/improv/running.html#windows).
+To build from source you need Rust **1.97** or newer:
 
 ```sh
 git clone https://codeberg.org/gregburd/improv && cd improv

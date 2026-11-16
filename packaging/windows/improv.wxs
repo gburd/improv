@@ -1,0 +1,97 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  The Improv installer for Windows (WiX v4+ schema; built with WiX 7 by
+  ci/windows-msi.ps1, which defines Version, Stage and Icon).
+
+  Per user, never per machine: it installs under %LOCALAPPDATA%\Programs
+  and writes only the user's registry and PATH, so it needs no
+  administrator and shows no UAC prompt. A per-machine choice would need
+  the system PATH, the all-users Start menu and a second install test, for
+  a program each user can install in a minute.
+
+  No license dialog: the MIT and Apache-2.0 licences grant permissions and
+  ask for no agreement, so there is nothing to click through. They are
+  installed as files next to the README, as in the zip. With no dialogs at
+  all, the MSI shows Windows Installer's progress bar and needs no WiX UI
+  extension.
+
+  No file associations: .db is too generic to claim.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <!-- NB: the UpgradeCode names Improv for every version and both
+       architectures; never change it, or new versions stop upgrading old
+       ones in place. -->
+  <Package Name="Improv" Manufacturer="Greg Burd" Version="$(Version)"
+           UpgradeCode="{0B6FBAAD-64D9-4720-9270-A1B9FCB264FD}"
+           Scope="perUser" Language="1033">
+    <!-- A newer version replaces the installed one. A same-version MSI
+         replaces it too, so the x64 and the arm64 builds of one release
+         (two product codes) never sit side by side in one folder. An older
+         version is refused. -->
+    <MajorUpgrade AllowSameVersionUpgrades="yes"
+                  DowngradeErrorMessage="A newer version of Improv is already installed. To install this version, first uninstall Improv in Settings, Apps." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <!-- Add/Remove Programs (Settings, Apps): the icon and the home page.
+         The publisher is the Manufacturer and the version the Version. -->
+    <Icon Id="improv.ico" SourceFile="$(Icon)" />
+    <Property Id="ARPPRODUCTICON" Value="improv.ico" />
+    <Property Id="ARPURLINFOABOUT" Value="https://gburd.github.io/improv/" />
+    <!-- One feature: there is nothing for Modify to change. -->
+    <Property Id="ARPNOMODIFY" Value="1" />
+
+    <!-- %LOCALAPPDATA%\Programs\Improv: the README, licences and changelog,
+         and bin\ with the four programs, which goes on the user's PATH. -->
+    <StandardDirectory Id="PerUserProgramFilesFolder">
+      <Directory Id="INSTALLFOLDER" Name="Improv">
+        <Directory Id="BINFOLDER" Name="bin" />
+      </Directory>
+    </StandardDirectory>
+    <StandardDirectory Id="ProgramMenuFolder" />
+    <StandardDirectory Id="PersonalFolder" />
+
+    <!-- Each component's key path is a value under HKCU, as Windows
+         Installer requires of components in the user's profile (ICE38),
+         and each folder made there is removed on uninstall (ICE64). Such a
+         component needs a fixed GUID; keep each one as long as the
+         component installs the same files to the same place. -->
+    <Component Id="Programs" Directory="BINFOLDER" Guid="{7FD3C802-184F-4314-A251-4B2BF7736851}">
+      <File Id="improv_gui.exe" Source="$(Stage)\improv-gui.exe" />
+      <File Id="improv.exe" Source="$(Stage)\improv.exe" />
+      <File Id="improv_tui.exe" Source="$(Stage)\improv-tui.exe" />
+      <File Id="improv_server.exe" Source="$(Stage)\improv-server.exe" />
+      <!-- Appended to the user's PATH; uninstall removes just this entry. -->
+      <Environment Id="PATH" Name="PATH" Value="[BINFOLDER]" Part="last"
+                   Action="set" System="no" />
+      <RemoveFolder Id="RemoveBinFolder" On="uninstall" />
+      <RegistryValue Root="HKCU" Key="Software\Greg Burd\Improv" Name="Programs"
+                     Type="integer" Value="1" KeyPath="yes" />
+    </Component>
+
+    <Component Id="Documents" Directory="INSTALLFOLDER" Guid="{58565EA9-5E09-482E-BA9D-CEBC7F5BD573}">
+      <File Id="README.md" Source="$(Stage)\README.md" />
+      <File Id="LICENSE_APACHE" Source="$(Stage)\LICENSE-APACHE" />
+      <File Id="LICENSE_MIT" Source="$(Stage)\LICENSE-MIT" />
+      <File Id="CHANGELOG.md" Source="$(Stage)\CHANGELOG.md" />
+      <RemoveFolder Id="RemoveInstallFolder" On="uninstall" />
+      <!-- %LOCALAPPDATA%\Programs too, which this may have made: Windows
+           Installer removes a folder only when it is empty, so one that
+           holds other programs stays. -->
+      <RemoveFolder Id="RemoveProgramsFolder" Directory="PerUserProgramFilesFolder"
+                    On="uninstall" />
+      <RegistryValue Root="HKCU" Key="Software\Greg Burd\Improv" Name="Documents"
+                     Type="integer" Value="1" KeyPath="yes" />
+    </Component>
+
+    <!-- Start menu, Improv: the GUI, started in Documents, so that a model
+         saved under a bare name lands there and not among the programs. -->
+    <Component Id="StartMenu" Directory="ProgramMenuFolder">
+      <Shortcut Id="ImprovShortcut" Name="Improv"
+                Description="Multidimensional spreadsheet"
+                Target="[BINFOLDER]improv-gui.exe" WorkingDirectory="PersonalFolder"
+                Icon="improv.ico" />
+      <RegistryValue Root="HKCU" Key="Software\Greg Burd\Improv" Name="StartMenu"
+                     Type="integer" Value="1" KeyPath="yes" />
+    </Component>
+  </Package>
+</Wix>

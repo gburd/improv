@@ -6,8 +6,8 @@ guide](./getting-started.md) walks through modeling itself.
 
 ## Install a release
 
-From 0.12, each GitHub Release also carries packages (all x86_64 Linux,
-except the formula). Every Linux artifact (the tarball, the packages,
+From 0.12, each GitHub Release also carries packages (x86_64 Linux,
+except the Windows installers and the formula). Every Linux artifact (the tarball, the packages,
 pg_improv and the DuckDB extension) is built on EL8 (manylinux_2_28) and
 needs glibc 2.28 or newer; `improv` also needs GCC 8's libstdc++ or newer
 (`libstdc++.so.6`). Each release installs and runs the packages on
@@ -23,12 +23,50 @@ not start. (0.12.0's own Linux artifacts need glibc 2.39, and pg_improv
 | `improv_X.Y.Z-1_amd64.deb`, `improv-X.Y.Z-1.x86_64.rpm` | `sudo apt install ./improv_*.deb` or `sudo dnf install ./improv-*.rpm`: the four binaries in `/usr/bin`, man pages, bash/zsh/fish completions |
 | `postgresql-N-improv_X.Y.Z-1_amd64.deb` | pg_improv for PostgreSQL N (15–18) from apt.postgresql.org, in its paths |
 | `postgresqlN-improv-X.Y.Z-1.x86_64.rpm` | the same for yum.postgresql.org's `postgresqlN-server` (`/usr/pgsql-N`) |
+| `improv-X.Y.Z-x64.msi`, `improv-X.Y.Z-arm64.msi` | the Windows installer, for x64 and Arm PCs; see [Windows](#windows) |
 | `improv.rb` | a Homebrew formula for macOS (arm64 and Intel). Homebrew installs only from a tap: `brew tap-new --no-git local/improv`, `cp improv.rb "$(brew --repository local/improv)/Formula/"`, `brew install local/improv/improv` |
 | `ghcr.io/gburd/improv:X.Y.Z` | the server and CLI in a container (see [The HTTP server](./server.md#deployment)) |
 
 pg_improv is also on [PGXN](https://pgxn.org/dist/pg_improv/), and the
 DuckDB extension in the community repository (`INSTALL improv FROM
 community`).
+
+### Windows
+
+Download `improv-X.Y.Z-x64.msi` for an Intel or AMD PC, or
+`improv-X.Y.Z-arm64.msi` for an Arm PC (Snapdragon and other Windows on
+Arm machines), and open it. The arm64 build is native, not emulated. Both
+need Windows 10 or 11, 64-bit.
+
+The installer is not signed yet, so Microsoft Defender SmartScreen may say
+"Windows protected your PC". Before you go past it, check the download
+(see [Verifying a release](#verifying-a-release); PowerShell has
+`Get-FileHash` for the SHA-256), then click **More info**, then **Run
+anyway**.
+
+It installs for the current user only, so it asks for no administrator
+password:
+
+- the four programs in `%LOCALAPPDATA%\Programs\Improv\bin`, and the README,
+  the two licences and the changelog one folder up;
+- **Improv** in the Start menu, which opens the GUI (`improv-gui.exe`) in
+  your Documents folder;
+- that `bin` folder on your PATH, so a terminal opened after the install
+  runs `improv`, `improv-tui` and `improv-server` by name.
+
+It shows no licence to accept: Improv is MIT or Apache-2.0, which ask
+nothing of a user, and both are installed as files. It claims no file
+types.
+
+A newer installer upgrades the installed version in place; an older one
+refuses to install over a newer one. To uninstall, use Settings, Apps,
+Installed apps, Improv, or `msiexec /x improv-X.Y.Z-x64.msi`. Uninstalling
+removes the programs, the shortcut and the PATH entry, and leaves your
+models alone. For a script, `msiexec /i improv-X.Y.Z-x64.msi /qn` installs
+without a window, and `/l*v install.log` writes a log.
+
+The `.zip` beside the installer holds the same programs, plus the man
+pages and shell completions, for running without installing.
 
 ## Build
 
@@ -57,7 +95,7 @@ Each GitHub Release carries, besides the archives:
 | `SHA256SUMS.sigstore.json` | A [cosign](https://docs.sigstore.dev/) keyless signature of `SHA256SUMS`: the certificate names the release workflow and the tag, and the signing is logged in Rekor, the public transparency log. |
 | `<binary>-vX.Y.Z-<target>.cdx.json` | A CycloneDX SBOM per binary (`improv`, `improv-tui`, `improv-server`, `improv-gui`) and target, from `cargo cyclonedx`. |
 | `pg_improv-X.Y.Z-pgN-x86_64-linux.cdx.json`, `improv-X.Y.Z-duckdb-linux_amd64.cdx.json` | The extensions' SBOMs. |
-| `*.deb`, `*.rpm`, `improv.rb` | The packages above: the `.deb`/`.rpm` repackage the Linux tarballs (same binaries, same SBOMs) and are in `SHA256SUMS`; the formula is made from `SHA256SUMS` and pins the macOS tarballs by their hash. |
+| `*.deb`, `*.rpm`, `*.msi`, `improv.rb` | The packages above: the `.deb`/`.rpm` repackage the Linux tarball and each `.msi` a Windows zip (same binaries, same SBOMs), and they are in `SHA256SUMS`; the formula is made from `SHA256SUMS` and pins the macOS tarballs by their hash. |
 
 Check the signature on the sums, then the files against the sums (cosign
 2.4 or later):
@@ -74,6 +112,17 @@ sha256sum --ignore-missing -c SHA256SUMS    # macOS: shasum -a 256 --ignore-miss
 `release.yml` for that tag in `gburd/improv`; `--ignore-missing` checks only
 the files you downloaded. Without cosign, `sha256sum -c` still catches a
 corrupt download, but not a substituted one.
+
+On Windows, cosign has a Windows build (`cosign-windows-amd64.exe` or
+`cosign-windows-arm64.exe` from its releases) that takes the same
+arguments, in PowerShell with a backtick for each line break. Then compare
+the installer's SHA-256 with its line in `SHA256SUMS`:
+
+```powershell
+$msi = "improv-1.0.0-x64.msi"
+$want = (Select-String -SimpleMatch "  $msi" SHA256SUMS).Line.Split(" ")[0]
+(Get-FileHash -Algorithm SHA256 $msi).Hash -eq $want    # True
+```
 
 ## A model to play with
 

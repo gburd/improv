@@ -77,10 +77,19 @@ for f in "$dist"/*; do
 			take "$root/crates/${crate_bin%%:*}/${bin}_bin_$target.cdx.json" "$bin-$tag-$target.cdx.json"
 		done
 		;;
-	# The .deb and .rpm repackage a tarball above (ci/packages.sh): the same
-	# binaries, so the tarball's SBOMs describe them; SHA256SUMS covers them.
+	# The .deb and .rpm repackage a tarball above (ci/packages.sh), and each
+	# .msi a zip (ci/windows-msi.ps1): the same binaries, so the archive's
+	# SBOMs describe them; SHA256SUMS covers them.
 	"improv_${ver}-1_amd64.deb" | "improv-${ver}-1.x86_64.rpm")
 		[ -e "$dist/improv-$tag-$linux.tar.gz" ] || die "$name without improv-$tag-$linux.tar.gz"
+		continue
+		;;
+	"improv-$ver-x64.msi")
+		[ -e "$dist/improv-$tag-x86_64-pc-windows-msvc.zip" ] || die "$name without its zip"
+		continue
+		;;
+	"improv-$ver-arm64.msi")
+		[ -e "$dist/improv-$tag-aarch64-pc-windows-msvc.zip" ] || die "$name without its zip"
 		continue
 		;;
 	postgresql-*-improv_"${ver}"-1_amd64.deb | postgresql*-improv-"${ver}"-1.x86_64.rpm)

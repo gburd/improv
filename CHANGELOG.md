@@ -8,6 +8,22 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **A Windows installer, for x64 and native Arm.** Each release carries
+  `improv-X.Y.Z-x64.msi` and `improv-X.Y.Z-arm64.msi` (built with the WiX
+  Toolset 7 from the release zip's programs; `packaging/windows/improv.wxs`,
+  `ci/windows-msi.ps1`). It installs per user, with no administrator
+  prompt, into `%LOCALAPPDATA%\Programs\Improv`: the four programs, the
+  README, the licences and the changelog, an **Improv** Start menu entry
+  for the GUI, and its `bin` folder on the user's PATH, which uninstalling
+  removes again. A newer version upgrades in place, an older one is
+  refused, and Settings, Apps shows the icon, publisher, version and home
+  page. It is not signed yet, so SmartScreen may warn: check the download
+  against `SHA256SUMS` (the installers are in it, signed with cosign) and
+  choose More info, Run anyway. Windows on Arm gets native binaries, built
+  and tested on GitHub's `windows-11-arm` runner, with their own zip and
+  SBOMs. Every tag and dry run installs, upgrades and uninstalls both
+  installers on clean runners before anything is published
+  (`ci/windows-msi-test.ps1`).
 - **Docs: a movie of the web GUI.** `docs/demo/web-movie.sh` records two
   browsers on one improv-server (a login, a pivot, an edit one browser
   sends and the other shows with the server's new Revenue, a refused
