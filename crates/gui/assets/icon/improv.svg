@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- The Improv icon: a worksheet (a header row and column in dark gray)
+     and a pivot arrow that turns its columns into rows, in NeXTSTEP's
+     four grays. Every edge sits on a 16-unit grid, so the 16 px rendering
+     stays sharp. Original work for Improv (MIT OR Apache-2.0);
+     make-icons.sh renders improv.ico and improv.png from it. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <rect width="256" height="256" fill="#000000"/>
+  <rect x="16" y="16" width="224" height="224" fill="#aaaaaa"/>
+  <rect x="96" y="96" width="144" height="144" fill="#000000"/>
+  <path d="M112 112h32v32h-32zM160 112h32v32h-32zM208 112h32v32h-32zM112 160h32v32h-32zM112 208h32v32h-32z"
+        fill="#555555"/>
+  <path d="M160 160h32v32h-32zM208 160h32v32h-32zM160 208h32v32h-32zM208 208h32v32h-32z"
+        fill="#ffffff"/>
+  <path d="M136 56A80 80 0 0 0 56 136" fill="none" stroke="#000000" stroke-width="24"/>
+  <path d="M128 24v64l48-32zM24 128h64l-32 48z" fill="#000000"/>
+</svg>

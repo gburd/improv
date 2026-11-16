@@ -95,6 +95,12 @@ egui_extras = "=0.37.0"
 # (crates/gui_web/src/a11y.rs). The same version egui resolves to, so the
 # types are egui's own. MIT OR Apache-2.0.
 accesskit = "=0.25.2"
+# The build script of the four binaries (packaging/windows/resource.rs)
+# embeds the icon and version information in each Windows .exe with the
+# SDK's rc.exe; a Windows-host build dependency only. Without default
+# features it needs no TOML parser: its one dependency is version_check.
+# Pinned exactly, as a build step of every release. MIT.
+winresource = { version = "=0.1.34", default-features = false }
 # Command-line parsing for the four binaries, and the man pages and shell
 # completions generated from the same definitions (G1-G3).
 clap = { version = "4.6.7", features = ["derive", "env"] }

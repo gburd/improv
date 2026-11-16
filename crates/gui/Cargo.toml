@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 license = "(MIT OR Apache-2.0) AND OFL-1.1"
 
+# The Windows icon and version information (a no-op elsewhere).
+build = "../../packaging/windows/resource.rs"
+
 [[bin]]
 name = "improv-gui"
 path = "src/main.rs"
@@ -49,3 +52,6 @@ improv_policy = { path = "../policy" }
 # The crash-safety tests check the store file with SQLite's integrity_check.
 mentat.workspace = true
 improv_storage_mentat = { path = "../storage_mentat" }
+
+[target.'cfg(windows)'.build-dependencies]
+winresource.workspace = true

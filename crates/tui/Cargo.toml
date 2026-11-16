@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+# The Windows icon and version information (a no-op elsewhere).
+build = "../../packaging/windows/resource.rs"
+
 [[bin]]
 name = "improv-tui"
 path = "src/main.rs"
@@ -35,3 +38,6 @@ improv_storage_mentat = { path = "../storage_mentat" }
 # `coverage(off)` exclusions on the real-terminal shell in main.rs.
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage_nightly)'] }
+
+[target.'cfg(windows)'.build-dependencies]
+winresource.workspace = true

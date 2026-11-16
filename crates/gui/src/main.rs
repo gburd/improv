@@ -82,6 +82,7 @@ fn main() -> eframe::Result<()> {
 
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
+            .with_icon(window_icon())
             .with_title(app.native_title())
             .with_inner_size(app::INITIAL_WINDOW)
             .with_min_inner_size(app::MIN_WINDOW),
@@ -98,6 +99,13 @@ fn main() -> eframe::Result<()> {
             Ok(Box::new(app))
         }),
     )
+}
+
+/// The window's icon (the title bar, the taskbar, the window switcher):
+/// Improv's own, rendered from assets/icon/improv.svg, not eframe's default.
+fn window_icon() -> egui::IconData {
+    eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon/improv.png"))
+        .expect("assets/icon/improv.png is a PNG")
 }
 
 /// A model improv-server serves: the worksheet app over the remote model
@@ -118,6 +126,7 @@ fn served_main(url: &str) -> eframe::Result<()> {
     let token = std::env::var("IMPROV_API_TOKEN").ok();
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
+            .with_icon(window_icon())
             .with_title(&title)
             .with_inner_size(app::INITIAL_WINDOW)
             .with_min_inner_size(app::MIN_WINDOW),
@@ -140,4 +149,15 @@ fn served_main(url: &str) -> eframe::Result<()> {
             ))))
         }),
     )
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    #[test]
+    fn the_window_icon_is_the_256_px_improv_icon() {
+        let icon = super::window_icon();
+        assert_eq!((icon.width, icon.height), (256, 256));
+        assert_eq!(icon.rgba.len(), 256 * 256 * 4);
+    }
 }

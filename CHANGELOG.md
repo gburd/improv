@@ -76,6 +76,14 @@ this project follows [Semantic Versioning](https://semver.org/).
   0.15.0,** to match pg_improv (which led with its 0.14.0->0.15.0 catalog
   upgrade). All components of a release carry one version again.
 
+- **An Improv icon.** A worksheet with a pivot arrow, in NeXTSTEP's four
+  grays (`crates/gui/assets/icon/improv.svg`; `make-icons.sh` renders
+  the PNG and the 16 to 256 px `.ico` from it). The desktop GUI's window
+  shows it on every platform in place of eframe's default, and the four
+  Windows binaries carry it, with version information (product, company,
+  description and version in a file's Properties), through a build script
+  shared by the four crates (`packaging/windows/resource.rs`, on
+  `winresource` 0.1.34, a Windows-host build dependency only).
 - **improv-gui is a Windows GUI program.** Started from the Start menu or
   Explorer it no longer opens a console window beside its own. Started
   from a terminal, it attaches to that terminal's console until its window

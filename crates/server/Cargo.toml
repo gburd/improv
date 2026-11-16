@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+# The Windows icon and version information (a no-op elsewhere).
+build = "../../packaging/windows/resource.rs"
+
 [[bin]]
 name = "improv-server"
 path = "src/main.rs"
@@ -43,3 +46,6 @@ rcgen.workspace = true
 # `coverage(off)` so the report measures library code only.
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(coverage_nightly)"] }
+
+[target.'cfg(windows)'.build-dependencies]
+winresource.workspace = true
