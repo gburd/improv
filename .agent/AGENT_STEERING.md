@@ -88,6 +88,19 @@ stages 1-4 in 0.13).
 The 1.0.0 plan is `docs/reviews/2026-10-21-road-to-1.0.md`; its "1.0.0 exit
 criteria" are the bar. Mark tasks done there as they land.
 
+- **On work/winmsi (2026-11-15), for 0.15:** a Windows installer.
+  improv-gui is a GUI-subsystem program that attaches to its terminal's
+  console until its window is up (`crates/gui/src/console.rs`); an Improv
+  icon (`crates/gui/assets/icon/`, our own SVG) is in the window and in
+  the four .exe files (`packaging/windows/resource.rs`, winresource); and
+  `improv-X.Y.Z-{x64,arm64}.msi` (`packaging/windows/improv.wxs`,
+  `ci/windows-msi.ps1`, WiX 7.0.1, per user, unsigned) is built after
+  each Windows zip. The release matrix gains `aarch64-pc-windows-msvc`
+  on `windows-11-arm`, and `msi-test` (`ci/windows-msi-test.ps1`)
+  installs, upgrades, refuses a downgrade and uninstalls on both
+  architectures before anything publishes. Verified on santorini (arm64);
+  x64 and the windows-11-arm runner only in the release dry run. Still
+  open: signing (SmartScreen warns), winget (ask each release).
 - **Released 2026-11-08:** tag `v0.14.0` = `de14c77`: Cedar stage 4 (TLS to
   Postgres with verified certificates and sslmode; improv-server HTTPS, and
   no tokens over plain HTTP off loopback without `IMPROV_ALLOW_PLAIN=1`),
