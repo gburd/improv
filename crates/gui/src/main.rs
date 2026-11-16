@@ -4,6 +4,10 @@
 //! `.agent/steering/AGENT_GUI_STEERING.md` §9). It loads a model from a store
 //! (a Mentat file or a `postgres://…?model=` URL), renders a measure as a pivot grid, and (Phase 5 increments) offers a
 //! model browser, formula editor, and Info panel.
+// A GUI program on Windows: no console window opens with it. Started from a
+// terminal, it prints there all the same (console.rs). Not in tests, whose
+// harness is a console program.
+#![cfg_attr(not(test), windows_subsystem = "windows")]
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 // The attribute is only used inside #[cfg(test)] modules, so non-test
 // coverage builds would otherwise warn that the feature is unused.
@@ -14,6 +18,8 @@ mod app;
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod args;
 mod chart;
+#[cfg(windows)]
+mod console;
 mod csv_wizard;
 // Shared with the TUI, the server and the browser (improv_client).
 use improv_client::{completion, diagnostics, function_help};
@@ -56,6 +62,8 @@ use app::ImprovApp;
 use clap::Parser;
 
 fn main() -> eframe::Result<()> {
+    #[cfg(windows)]
+    console::attach();
     // No model is "": an in-memory scratch model.
     let db = args::Cli::parse().model.unwrap_or_default();
     if improv_client::remote::is_server(&db) {
@@ -83,6 +91,8 @@ fn main() -> eframe::Result<()> {
         "Improv",
         native_options,
         Box::new(|cc| {
+            #[cfg(windows)]
+            console::detach();
             // Apply the NeXTSTEP look-and-feel once at startup.
             theme::apply(&cc.egui_ctx);
             Ok(Box::new(app))
@@ -120,6 +130,9 @@ fn served_main(url: &str) -> eframe::Result<()> {
             let ctx = cc.egui_ctx.clone();
             let svc = improv_client::remote::Remote::new(target, move || ctx.request_repaint())
                 .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { e.into() })?;
+            // After the client starts, so that its error reaches the terminal.
+            #[cfg(windows)]
+            console::detach();
             Ok(Box::new(served::Served(served::WebApp::new(
                 &cc.egui_ctx,
                 svc,

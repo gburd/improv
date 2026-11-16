@@ -661,6 +661,21 @@ desktop app over a server is on the plan (road-to-1.0 I4).
 | Windows 11 (x64, arm64) | Builds and runs; arm64 tested on santorini, x64 in CI. |
 | macOS | Builds and passes its tests in CI. |
 
+### Windows
+
+`improv-gui.exe` is a Windows GUI program: started from the Start menu or
+Explorer, it opens no console window. Started from a terminal, it prints
+`--help`, `--version` and startup errors there, then lets go of the
+terminal once its window is up (a Ctrl+C typed there no longer reaches
+it). The shell does not wait for it, so to capture its output in
+PowerShell, pipe it: `improv-gui --version | Out-String`.
+
+It draws with OpenGL 2.0 or newer, from the graphics driver (on an Arm PC
+whose driver has none, from Microsoft's OpenCL and OpenGL Compatibility
+Pack). A session without it, such as an ssh login or a virtual machine
+without 3D acceleration, has only Windows' own OpenGL 1.1, and the GUI
+exits with `egui_glow requires opengl 2.0+`.
+
 ### illumos
 
 eframe draws with OpenGL through glutin, and glutin 0.32's EGL and GLX

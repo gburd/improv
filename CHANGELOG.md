@@ -76,6 +76,13 @@ this project follows [Semantic Versioning](https://semver.org/).
   0.15.0,** to match pg_improv (which led with its 0.14.0->0.15.0 catalog
   upgrade). All components of a release carry one version again.
 
+- **improv-gui is a Windows GUI program.** Started from the Start menu or
+  Explorer it no longer opens a console window beside its own. Started
+  from a terminal, it attaches to that terminal's console until its window
+  is up, so `--help`, `--version` and a model that fails to open still
+  print there; a pipe or a redirection (`improv-gui --version | more`)
+  receives them too. PowerShell does not wait for a GUI program, so
+  `$v = improv-gui --version` captures nothing: pipe it instead.
 - **improv-cosmic: a copied range's HTML marks its headers.** The row and
   column labels are `<th>` cells, and a paste skips `<th>` cells, so a
   range copied from improv-cosmic pastes back as its values, not offset by

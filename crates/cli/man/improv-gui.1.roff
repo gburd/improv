@@ -24,6 +24,12 @@ may not do is greyed out, and a refused change says why. Changes made
 elsewhere show as they happen. The certificate is checked against the
 operating system's CAs, or only against
 .IR FILE .
+.PP
+On Windows,
+.B improv-gui
+is a GUI program: it opens no console window, and from a terminal it
+prints its messages there until its window is up. The shell does not wait
+for it.
 .SH KEYS
 Key equivalents take Ctrl (Cmd on macOS):
 .BR s " save, " z " undo, " Z " or " y " redo, " h " hide, " q " quit."

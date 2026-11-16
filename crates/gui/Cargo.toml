@@ -24,12 +24,14 @@ thiserror.workspace = true
 # Print's Date and Time markers, in local time.
 chrono.workspace = true
 
-# Print on Windows: the system print dialog and GDI.
+# Print on Windows: the system print dialog and GDI. The console of the
+# terminal improv-gui was started from (src/console.rs).
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
   "Win32_Foundation",
   "Win32_Graphics_Gdi",
   "Win32_Storage_Xps",
+  "Win32_System_Console",
   "Win32_UI_Controls_Dialogs",
 ] }
 
