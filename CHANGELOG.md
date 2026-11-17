@@ -139,6 +139,10 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Security
 
+- **cargo-deny: chrono's unmaintained advisory (RUSTSEC-2026-0543) is
+  ignored,** with a reason in `deny.toml`. chrono has no safe upgrade or
+  drop-in replacement, and an unmaintained advisory is not a
+  vulnerability.
 - **Bundled SQLite 3.54.1 (RUSTSEC-2026-0459, CVE-2026-119375).** SQLite
   before 3.54.0 could return uninitialized memory when it opened a
   database together with a `-wal` file of a different page size, so a

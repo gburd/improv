@@ -16,6 +16,12 @@ ignore = [
     "RUSTSEC-2026-0370", # zvariant unmaintained
     "RUSTSEC-2026-0371", # zbus_names unmaintained
     "RUSTSEC-2026-0372", # zvariant_derive unmaintained
+    # chrono is unmaintained (2026-11), with no safe upgrade and no drop-in
+    # replacement: Improv uses it directly for dates in the formula language
+    # and the store, and it also comes through arrow/duckdb, cedar, egui and
+    # mentat. An unmaintained advisory is not a vulnerability. Revisit if a
+    # CVE lands, or when the ecosystem moves to jiff.
+    "RUSTSEC-2026-0543", # chrono unmaintained
 ]
 
 [licenses]
