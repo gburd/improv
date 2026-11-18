@@ -1,0 +1,29 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- 3D Multidimensional Cube + Category Tiles (Lotus Improv motif) -->
+    <!-- Top diamond face (Time axis) -->
+    <path
+        android:fillColor="#5AC8FA"
+        android:pathData="M54,24 L80,39 L54,54 L28,39 Z" />
+    <!-- Left face (Row axis / Categories) -->
+    <path
+        android:fillColor="#3478F6"
+        android:pathData="M28,39 L54,54 L54,84 L28,69 Z" />
+    <!-- Right face (Column axis / Measures) -->
+    <path
+        android:fillColor="#1D4ED8"
+        android:pathData="M54,54 L80,39 L80,69 L54,84 Z" />
+    <!-- Grid lines on cube faces -->
+    <path
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="1.5"
+        android:strokeAlpha="0.85"
+        android:pathData="M41,31.5 L67,46.5 M67,31.5 L41,46.5 M28,49 L54,64 L80,49 M28,59 L54,74 L80,59 M41,46.5 L41,76.5 M67,46.5 L67,76.5" />
+    <!-- Floating Category Tile accent -->
+    <path
+        android:fillColor="#F59E0B"
+        android:pathData="M64,22 h18 v8 h-18 z" />
+</vector>
