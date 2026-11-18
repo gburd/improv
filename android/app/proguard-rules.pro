@@ -5,5 +5,11 @@
 -keep class com.sun.jna.** { *; }
 -keepclassmembers class * extends com.sun.jna.** { *; }
 
+# JNA's optional AWT integration (com.sun.jna.Native$AWT) references java.awt.*,
+# which does not exist on Android. Those paths are never reached here, so tell
+# R8 not to warn about the missing desktop classes.
+-dontwarn java.awt.**
+-dontwarn com.sun.jna.Native$AWT
+
 # UniFFI-generated bindings call into the native library by reflection; keep them.
 -keep class uniffi.improv_android_ffi.** { *; }
