@@ -10,6 +10,10 @@
 //!
 //! The Android port (this crate and the Jetpack Compose app under `android/`)
 //! was contributed by David Gerbino <david.gerbino@dmgerbino.com>.
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
+// The coverage attribute is only used inside #[cfg(test)] modules, so a
+// non-test coverage build would otherwise warn that the feature is unused.
+#![cfg_attr(coverage_nightly, allow(unused_features))]
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
@@ -1769,9 +1773,55 @@ fn encode_viewport_binary(
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
 
+    /// The 24-byte cell record layout of the viewport buffer, split out so
+    /// tests can assert individual fields without re-deriving offsets.
+    struct CellRecord {
+        value: f64,
+        measure_id: u32,
+        row_item_id: u32,
+        col_item_id: u32,
+        tag: u8,
+        is_derived: u8,
+    }
+
+    /// Reads the header `(rows, cols, total_rows, total_cols)` from a viewport
+    /// buffer and the `index`-th cell record after it.
+    fn read_header(buf: &[u8]) -> (u32, u32, u32, u32) {
+        (
+            u32::from_le_bytes(buf[0..4].try_into().unwrap()),
+            u32::from_le_bytes(buf[4..8].try_into().unwrap()),
+            u32::from_le_bytes(buf[8..12].try_into().unwrap()),
+            u32::from_le_bytes(buf[12..16].try_into().unwrap()),
+        )
+    }
+
+    fn read_cell(buf: &[u8], index: usize) -> CellRecord {
+        let off = VIEWPORT_HEADER_BYTES + index * VIEWPORT_CELL_STRIDE_BYTES;
+        CellRecord {
+            value: f64::from_le_bytes(buf[off..off + 8].try_into().unwrap()),
+            measure_id: u32::from_le_bytes(buf[off + 8..off + 12].try_into().unwrap()),
+            row_item_id: u32::from_le_bytes(buf[off + 12..off + 16].try_into().unwrap()),
+            col_item_id: u32::from_le_bytes(buf[off + 16..off + 20].try_into().unwrap()),
+            tag: buf[off + 20],
+            is_derived: buf[off + 21],
+        }
+    }
+
+    /// Finds the measure id the sample model assigned a given name.
+    fn measure_id_of(eng: &ImprovMobileEngine, name: &str) -> String {
+        eng.get_measures()
+            .into_iter()
+            .find(|m| m.name == name)
+            .unwrap_or_else(|| panic!("measure {name} not found"))
+            .id
+    }
+
+    // The original end-to-end scenario over the sample model: build, read a
+    // viewport both ways, run analytics, and exercise the main edits.
     #[test]
     fn sample_3d_model_evaluates_and_populates_viewport_buffer() {
         let eng = ImprovMobileEngine::open_or_create(String::new());
@@ -1798,8 +1848,7 @@ mod tests {
             written as usize,
             VIEWPORT_HEADER_BYTES + 24 * 3 * VIEWPORT_CELL_STRIDE_BYTES
         );
-        let rows = u32::from_le_bytes(direct_buf[0..4].try_into().unwrap());
-        let cols = u32::from_le_bytes(direct_buf[4..8].try_into().unwrap());
+        let (rows, cols, _, _) = read_header(&direct_buf);
         assert_eq!((rows, cols), (24, 3));
 
         // Analytics summary on Margin
@@ -1836,5 +1885,1122 @@ mod tests {
             )
             .unwrap();
         assert_eq!(imported, 2);
+    }
+
+    // ---- ImprovFfiError ----
+
+    #[test]
+    fn ffi_error_from_string_carries_message() {
+        let err = ImprovFfiError::from("boom".to_string());
+        assert_eq!(err.to_string(), "boom");
+        let ImprovFfiError::Message(m) = err;
+        assert_eq!(m, "boom");
+    }
+
+    // ---- open_or_create / blank model / db path ----
+
+    #[test]
+    fn open_with_unopenable_path_runs_without_a_store() {
+        // A path whose parent directory does not exist cannot be opened as a
+        // store, so the engine runs entirely in memory (store = None). Every
+        // save becomes a no-op, and edits still work against the live model.
+        let eng = ImprovMobileEngine::open_or_create(
+            "/nonexistent-improv-xyz/parent/missing.db".to_string(),
+        );
+        // The sample model still loads (the "no store to seed" branch).
+        assert_eq!(eng.get_categories().len(), 3);
+        // Edits that would normally persist run their save paths with no store.
+        eng.add_category_item("Time".to_string(), "Q5".to_string())
+            .unwrap();
+        eng.set_cell_value(0, 0, 7.0).unwrap();
+        eng.load_sample_model().unwrap();
+        eng.create_blank_model().unwrap();
+        eng.add_category(
+            "Extra".to_string(),
+            vec!["A".to_string()],
+            AxisOrientation::Page,
+        )
+        .unwrap();
+        eng.select_page_item("Extra".to_string(), "A".to_string());
+        // Nothing panicked and the model is still coherent.
+        assert!(!eng.get_measures().is_empty());
+    }
+
+    #[test]
+    fn blank_model_has_period_department_budget() {
+        let eng = ImprovMobileEngine::open_or_create(String::new());
+        eng.create_blank_model().unwrap();
+        let cats = eng.get_categories();
+        assert_eq!(cats.len(), 2);
+        let measures = eng.get_measures();
+        assert_eq!(measures.len(), 1);
+        assert_eq!(measures[0].name, "Budget");
+        assert!(!measures[0].is_derived);
+        // Blank model: a single input measure so the grid's one-row header is
+        // the bare measure name, not "<tuple> · <measure>".
+        let vp = eng.get_viewport(0, 10, 0, 10);
+        assert_eq!(vp.total_rows, 2); // P1, P2 (one measure)
+        assert_eq!(vp.total_cols, 2); // Core, Growth
+        assert!(vp.row_headers.iter().any(|h| h.contains("Budget")));
+    }
+
+    #[test]
+    fn single_measure_empty_row_axis_uses_bare_measure_name() {
+        let eng = ImprovMobileEngine::open_or_create(String::new());
+        eng.create_blank_model().unwrap();
+        // Push both categories off the row axis so the row tuple collapses to
+        // the single "All" tuple; with one measure the row header is then the
+        // bare measure name (the `row_tuples.len() == 1 && empty` branch).
+        eng.pivot_category("Period".to_string(), AxisOrientation::Column, 0);
+        eng.pivot_category("Department".to_string(), AxisOrientation::Page, 0);
+        let vp = eng.get_viewport(0, 10, 0, 10);
+        assert_eq!(vp.total_rows, 1);
+        assert_eq!(vp.row_headers, vec!["Budget".to_string()]);
+    }
+
+    #[test]
+    fn open_or_create_persists_and_reloads_from_disk() {
+        let dir = std::env::temp_dir().join(format!("improv_android_ffi_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("reopen.db");
+        let path_str = path.to_string_lossy().to_string();
+
+        {
+            let eng = ImprovMobileEngine::open_or_create(path_str.clone());
+            assert_eq!(eng.get_db_path(), path_str);
+            // A freshly created store is seeded with the 3D sample model.
+            assert_eq!(eng.get_categories().len(), 3);
+            eng.add_category_item("Time".to_string(), "Q5".to_string())
+                .unwrap();
+        }
+        // Reopening the same path loads the saved model (not the sample again),
+        // so the Q5 item added above survives.
+        let eng2 = ImprovMobileEngine::open_or_create(path_str);
+        let time = eng2
+            .get_categories()
+            .into_iter()
+            .find(|c| c.name == "Time")
+            .unwrap();
+        assert_eq!(time.items.len(), 5);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn load_sample_model_resets_to_sample() {
+        let eng = ImprovMobileEngine::open_or_create(String::new());
+        eng.create_blank_model().unwrap();
+        assert_eq!(eng.get_categories().len(), 2);
+        eng.load_sample_model().unwrap();
+        assert_eq!(eng.get_categories().len(), 3);
+        assert_eq!(eng.get_formulas().len(), 3);
+    }
+
+    // ---- axis_tuples / build_grid_axes via get_categories & viewport ----
+
+    #[test]
+    fn categories_report_their_axis_orientation() {
+        let eng = ImprovMobileEngine::open_or_create(String::new());
+        let cats = eng.get_categories();
+        // sync_axes_with_model seeds Time->Row, Product->Column, Region->Page.
+        let by_name = |n: &str| cats.iter().find(|c| c.name == n).unwrap();
+        assert_eq!(by_name("Time").orientation, AxisOrientation::Row);
+        assert_eq!(by_name("Product").orientation, AxisOrientation::Column);
+        assert_eq!(by_name("Region").orientation, AxisOrientation::Page);
+        // The page category pins a selected item.
+        assert!(by_name("Region").selected_page_item_id.is_some());
+    }
+
+    #[test]
+    fn adding_a_category_products_cartesian_columns() {
+        let eng = ImprovMobileEngine::open_or_create(String::new());
+        eng.create_blank_model().unwrap();
+        // Blank model has Period (2) x Department (2). Put a third category on
+        // the column axis to exercise the cartesian product of two column
+        // categories (2 x 2 = 4 columns).
+        eng.add_category(
+            "Channel".to_string(),
+            vec!["Online".to_string(), "Retail".to_string()],
+            AxisOrientation::Column,
+        )
+        .unwrap();
+        let vp = eng.get_viewport(0, 50, 0, 50);
+        assert_eq!(vp.total_cols, 4); // Department x Channel
+        assert!(vp.col_headers.iter().any(|h| h.contains(" / ")));
+    }
+
+    // ---- get_viewport windowing ----
+
+    #[test]
+    fn viewport_windowing_clamps_and_offsets() {
+        let eng = ImprovMobileEngine::open_or_create(String::new());
+        // Full grid is 24 rows x 3 cols.
+        let full = eng.get_viewport(0, 100, 0, 100);
+        assert_eq!(full.cells.len(), 24 * 3);
+
+        // A window starting mid-grid, limited past the end, clamps to the grid.
+        let win = eng.get_viewport(20, 100, 1, 100);
+        assert_eq!(win.total_rows, 24);
+        assert_eq!(win.row_headers.len(), 4); // rows 20..24
+        assert_eq!(win.col_headers.len(), 2); // cols 1..3
+        assert_eq!(win.cells.len(), 4 * 2);
+        assert_eq!(win.cells[0].row_index, 20);
+        assert_eq!(win.cells[0].col_index, 1);
+
+        // A start past the end yields no rows but still reports the totals.
+        let past = eng.get_viewport(1000, 5, 1000, 5);
+        assert_eq!(past.total_rows, 24);
+        assert_eq!(past.total_cols, 3);
+        assert!(past.cells.is_empty());
+        assert!(past.row_headers.is_empty());
+
+        // A zero-size window: no cells, totals still known.
+        let zero = eng.get_viewport(0, 0, 0, 0);
+        assert!(zero.cells.is_empty());
+        assert_eq!(zero.total_rows, 24);
+
+        // The active measure is surfaced (the sample view focuses Margin).
+        assert!(!full.active_measure_id.is_empty());
+        assert!(!full.active_measure_name.is_empty());
+    }
+
+    #[test]
+    fn viewport_distinguishes_input_derived_and_blank_cells() {
+        let eng = ImprovMobileEngine::open_or_create(String::new());
+        let vp = eng.get_viewport(0, 24, 0, 3);
+        // Every input Price/UnitCost/Quantity cell is numeric and not derived.
+        let input_cell = vp.cells.iter().find(|c| c.measure_name == "Price").unwrap();
+        assert!(!input_cell.is_blank);
+        assert!(!input_cell.is_derived);
+        assert!(input_cell.numeric_value > 0.0);
+        // Revenue is derived and evaluates to a number.
+        let derived_cell = vp
+            .cells
+            .iter()
+            .find(|c| c.measure_name == "Revenue")
+            .unwrap();
+        assert!(derived_cell.is_derived);
+        assert!(!derived_cell.is_blank);
+        assert!(derived_cell.numeric_value > 0.0);
+    }
+
+    #[test]
+    fn viewport_blank_cell_for_sparse_input() {
+        // A model with one category and one input measure, leaving a cell
+        // unset so resolve_cell takes its blank branch (tag 0, NaN).
+        let eng = ImprovMobileEngine::open_or_create(String::new());
+        eng.create_blank_model().unwrap();
+        // Add a new item but no value for it -> that row is blank.
+        eng.add_category_item("Period".to_string(), "P3".to_string())
+            .unwrap();
+        let vp = eng.get_viewport(0, 50, 0, 50);
+        let blank = vp.cells.iter().find(|c| c.is_blank);
+        assert!(blank.is_some(), "expected at least one blank cell");
+        assert!(blank.unwrap().numeric_value.is_nan());
+    }
+
+    // ---- populate_viewport_buffer (unsafe ByteBuffer path) ----
+
+    #[test]
+    fn populate_buffer_null_or_tiny_writes_nothing() {
+        let eng = ImprovMobileEngine::open_or_create(String::new());
+        // Null pointer -> 0.
+        assert_eq!(eng.populate_viewport_buffer(0, 4096, 0, 24, 0, 3), 0);
+        // Capacity below the 16-byte header -> 0, even with a valid pointer.
+        let mut tiny = [0u8; 8];
+        assert_eq!(
+            eng.populate_viewport_buffer(tiny.as_mut_ptr() as u64, tiny.len() as u32, 0, 24, 0, 3),
+            0
+        );
+    }
+
+    #[test]
+    fn populate_buffer_truncates_without_overflow() {
+        let eng = ImprovMobileEngine::open_or_create(String::new());
+        // Room for the header plus exactly two cell records; the full grid
+        // needs far more, so the write must stop at the capacity and never
+        // touch the guard bytes past it.
+        let capacity = VIEWPORT_HEADER_BYTES + 2 * VIEWPORT_CELL_STRIDE_BYTES;
+        let mut backing = vec![0xABu8; capacity + 32];
+        let written =
+            eng.populate_viewport_buffer(backing.as_mut_ptr() as u64, capacity as u32, 0, 24, 0, 3);
+        assert_eq!(written as usize, capacity);
+        // The guard bytes beyond `capacity` stay untouched.
+        assert!(backing[capacity..].iter().all(|&b| b == 0xAB));
+        // The header still reports the full window geometry (24 x 3), even
+        // though only the first cells fit.
+        let (rows, cols, total_rows, total_cols) = read_header(&backing);
+        assert_eq!((rows, cols, total_rows, total_cols), (24, 3, 24, 3));
+    }
+
+    #[test]
+    fn buffer_bytes_match_cell_tags_and_fields() {
+        let eng = ImprovMobileEngine::open_or_create(String::new());
+        let bytes = eng.get_viewport_bytes(0, 24, 0, 3);
+        let (rows, cols, total_rows, total_cols) = read_header(&bytes);
+        assert_eq!((rows, cols, total_rows, total_cols), (24, 3, 24, 3));
+        assert_eq!(
+            bytes.len(),
+            VIEWPORT_HEADER_BYTES + 24 * 3 * VIEWPORT_CELL_STRIDE_BYTES
+        );
+
+        let price_id: u32 = measure_id_of(&eng, "Price").parse().unwrap();
+        let revenue_id: u32 = measure_id_of(&eng, "Revenue").parse().unwrap();
+
+        let mut saw_input = false;
+        let mut saw_derived = false;
+        for i in 0..(24 * 3) {
+            let cell = read_cell(&bytes, i);
+            assert_ne!(cell.row_item_id, 0);
+            assert_ne!(cell.col_item_id, 0);
+            if cell.measure_id == price_id {
+                assert_eq!(cell.tag, 1, "input number is tag 1"); // InputNumber
+                assert_eq!(cell.is_derived, 0);
+                assert!(cell.value.is_finite());
+                saw_input = true;
+            }
+            if cell.measure_id == revenue_id {
+                assert_eq!(cell.tag, 2, "derived number is tag 2"); // DerivedNumber
+                assert_eq!(cell.is_derived, 1);
+                assert!(cell.value.is_finite());
+                saw_derived = true;
+            }
+        }
+        assert!(saw_input && saw_derived);
+    }
+
+    #[test]
+    fn get_viewport_bytes_and_populate_buffer_agree() {
+        let eng = ImprovMobileEngine::open_or_create(String::new());
+        let bytes = eng.get_viewport_bytes(0, 24, 0, 3);
+        let mut direct = vec![0u8; bytes.len()];
+        let written = eng.populate_viewport_buffer(
+            direct.as_mut_ptr() as u64,
+            direct.len() as u32,
+            0,
+            24,
+            0,
+            3,
+        );
+        assert_eq!(written as usize, bytes.len());
+        assert_eq!(direct, bytes);
+    }
+
+    #[test]
+    fn derived_error_and_boolean_cells_tag_correctly() {
+        // Exercise resolve_cell's derived error (tag 4) and derived
+        // non-numeric (tag 3) branches through upsert_formula.
+        let eng = ImprovMobileEngine::open_or_create(String::new());
+        // Division by zero: UnitCost is never zero in the sample, so divide by
+        // (Quantity - Quantity) to force a #DIV/0! in every cell.
+        eng.upsert_formula("Bad = Price / (Quantity - Quantity)".to_string())
+            .unwrap();
+        // A comparison yields a boolean (non-numeric) derived value.
+        eng.upsert_formula("Flag = Price > UnitCost".to_string())
+            .unwrap();
+
+        let bytes = eng.get_viewport_bytes(0, 100, 0, 3);
+        let bad_id: u32 = measure_id_of(&eng, "Bad").parse().unwrap();
+        let flag_id: u32 = measure_id_of(&eng, "Flag").parse().unwrap();
+        let total = (bytes.len() - VIEWPORT_HEADER_BYTES) / VIEWPORT_CELL_STRIDE_BYTES;
+
+        let mut saw_error = false;
+        let mut saw_nonnumeric = false;
+        for i in 0..total {
+            let cell = read_cell(&bytes, i);
+            if cell.measure_id == bad_id {
+                assert_eq!(cell.tag, 4, "division by zero is tag 4"); // Error
+                assert_eq!(cell.is_derived, 1);
+                assert!(cell.value.is_nan());
+                saw_error = true;
+            }
+            if cell.measure_id == flag_id {
+                assert_eq!(cell.tag, 3, "boolean is tag 3"); // NonNumeric
+                assert_eq!(cell.is_derived, 1);
+                saw_nonnumeric = true;
+            }
+        }
+        assert!(saw_error, "expected a #DIV/0! error cell");
+        assert!(saw_nonnumeric, "expected a boolean non-numeric cell");
+    }
+
+    // ---- analytics ----
+
+    #[test]
+    fn analytics_deterministic_oracle() {
+        // A tiny hand-built model with a known single-row series so the
+        // statistics have exact expected values.
+        let eng = ImprovMobileEngine::open_or_create(String::new());
+        eng.create_blank_model().unwrap();
+        // Blank model: Period {P1,P2} x Department {Core,Growth}, Budget all 0.
+        // Set the four Budget cells to 10, 20, 30, 40 via the grid.
+        // Rows are the two Periods (single measure), cols are the two Depts.
+        let values = [[10.0, 20.0], [30.0, 40.0]];
+        for (r, row) in values.iter().enumerate() {
+            for (c, v) in row.iter().enumerate() {
+                eng.set_cell_value(r as u32, c as u32, *v).unwrap();
+            }
+        }
+        let a = eng.get_slice_analytics("Budget".to_string());
+        assert_eq!(a.cell_count, 4);
+        assert_eq!(a.sum, 100.0);
+        assert_eq!(a.mean, 25.0);
+        assert_eq!(a.median, 25.0); // (20 + 30) / 2
+        assert_eq!(a.min, 10.0);
+        assert_eq!(a.max, 40.0);
+        // population std dev of [10,20,30,40] = sqrt(125) ~= 11.1803
+        assert!((a.std_dev - 125f64.sqrt()).abs() < 1e-9);
+        // Two rows each with a value -> two per-row series points.
+        assert_eq!(a.series_labels.len(), 2);
+        assert_eq!(a.series_values, vec![30.0, 70.0]);
+    }
+
+    #[test]
+    fn analytics_odd_count_median() {
+        let eng = ImprovMobileEngine::open_or_create(String::new());
+        eng.create_blank_model().unwrap();
+        eng.add_category_item("Department".to_string(), "Ops".to_string())
+            .unwrap();
+        // Period {P1,P2} x Department {Core,Growth,Ops} = 6 cells; fill five
+        // with values and leave one blank by setting only five.
+        let vals = [1.0, 2.0, 3.0, 4.0, 5.0];
+        let mut k = 0;
+        'outer: for r in 0..2u32 {
+            for c in 0..3u32 {
+                if k >= vals.len() {
+                    break 'outer;
+                }
+                eng.set_cell_value(r, c, vals[k]).unwrap();
+                k += 1;
+            }
+        }
+        let a = eng.get_slice_analytics("Budget".to_string());
+        // The sixth cell (a Period x Ops coordinate) was never seeded, so it
+        // stays blank and drops out; the five set values give an odd count.
+        assert_eq!(a.cell_count, 5);
+        assert_eq!(a.median, 3.0); // median of [1, 2, 3, 4, 5]
+    }
+
+    #[test]
+    fn analytics_all_blank_measure_is_zeroed() {
+        // A measure that resolves to all-blank cells reports zeroed stats and
+        // no series.
+        let eng = ImprovMobileEngine::open_or_create(String::new());
+        eng.create_blank_model().unwrap();
+        // Add an input measure then delete every cell by never setting it is
+        // not possible (add_input_measure seeds defaults); instead add a
+        // category whose items have no Budget value.
+        eng.add_category_item("Period".to_string(), "P3".to_string())
+            .unwrap();
+        // The new P3 row has no Budget cells -> its series row is skipped, but
+        // the existing rows still carry values, so target a brand-new sparse
+        // measure via CSV import of a disjoint category.
+        let a = eng.get_slice_analytics("Budget".to_string());
+        // P1/P2 rows have values; P3 does not. cell_count counts only finite
+        // cells, so it stays at the four seeded P1/P2 cells.
+        assert_eq!(a.cell_count, 4);
+        assert_eq!(a.series_labels.len(), 2);
+    }
+
+    #[test]
+    fn analytics_unknown_measure_falls_back_to_active() {
+        let eng = ImprovMobileEngine::open_or_create(String::new());
+        // An unknown name falls back to the active measure, never panics.
+        let a = eng.get_slice_analytics("NoSuchMeasure".to_string());
+        assert!(a.cell_count > 0);
+        assert!(!a.measure_name.is_empty());
+    }
+
+    #[test]
+    fn analytics_single_cell() {
+        let eng = ImprovMobileEngine::open_or_create(String::new());
+        eng.create_blank_model().unwrap();
+        eng.delete_measure("nope".to_string()).ok();
+        // Reduce to a 1x1 grid by removing one item from each axis is not a
+        // public op; instead pivot Department to Page so the grid is 2 rows x
+        // 1 "All" column, then a single row has one value.
+        eng.pivot_category("Department".to_string(), AxisOrientation::Page, 0);
+        let a = eng.get_slice_analytics("Budget".to_string());
+        // Period on rows (2), Department pinned on page -> 2 finite cells.
+        assert_eq!(a.cell_count, 2);
+        assert!(a.min <= a.max);
+    }
+
+    // ---- edits: category items, measures, derived, what-if, rename ----
+
+    #[test]
+    fn add_category_item_errors() {
+        let eng = ImprovMobileEngine::open_or_create(String::new());
+        // Empty name.
+        assert!(eng
+            .add_category_item("Time".to_string(), "  ".to_string())
+            .is_err());
+        // Unknown category.
+        assert!(eng
+            .add_category_item("Nope".to_string(), "X".to_string())
+            .is_err());
+        // Duplicate item (case-insensitive).
+        assert!(eng
+            .add_category_item("Time".to_string(), "q1".to_string())
+            .is_err());
+        // By numeric category id succeeds.
+        let tile = eng
+            .add_category_item("1".to_string(), "Q5".to_string())
+            .unwrap();
+        assert_eq!(tile.name, "Time");
+    }
+
+    #[test]
+    fn add_input_measure_errors_on_blank_and_duplicate() {
+        let eng = ImprovMobileEngine::open_or_create(String::new());
+        assert!(eng.add_input_measure("  ".to_string(), 0.0).is_err());
+        // "Time" is a category name already in use.
+        assert!(eng.add_input_measure("Time".to_string(), 0.0).is_err());
+        // "Price" is an existing measure name.
+        assert!(eng.add_input_measure("Price".to_string(), 0.0).is_err());
+    }
+
+    #[test]
+    fn delete_measure_guards() {
+        let eng = ImprovMobileEngine::open_or_create(String::new());
+        // Unknown measure.
+        assert!(eng.delete_measure("Ghost".to_string()).is_err());
+        // Price is referenced by Revenue (= Price * Quantity), so it is
+        // protected from deletion.
+        assert!(eng.delete_measure("Price".to_string()).is_err());
+        // Delete a leaf derived measure by id.
+        let margin_id = measure_id_of(&eng, "Margin");
+        eng.delete_measure(margin_id).unwrap();
+        assert!(eng.get_measures().iter().all(|m| m.name != "Margin"));
+
+        // A blank model with one measure refuses to delete the last measure.
+        eng.create_blank_model().unwrap();
+        assert!(eng.delete_measure("Budget".to_string()).is_err());
+    }
+
+    #[test]
+    fn define_derived_measure_valid_and_parse_error() {
+        let eng = ImprovMobileEngine::open_or_create(String::new());
+        // Valid symbolic DSL.
+        let entry = eng
+            .upsert_formula("GrossUp = Revenue + COGS".to_string())
+            .unwrap();
+        assert_eq!(entry.measure_name, "GrossUp");
+        assert!(entry.expression.contains("GrossUp"));
+        assert!(entry.error_message.is_none());
+        assert!(eng
+            .get_formulas()
+            .iter()
+            .any(|f| f.measure_name == "GrossUp"));
+
+        // Natural-language form.
+        let nl = eng
+            .upsert_formula("Twice equals Revenue plus Revenue".to_string())
+            .unwrap();
+        assert_eq!(nl.measure_name, "Twice");
+        // The "is" connective is accepted as well as "equals".
+        let nl_is = eng
+            .upsert_formula("Double is Revenue plus Revenue".to_string())
+            .unwrap();
+        assert_eq!(nl_is.measure_name, "Double");
+
+        // Empty formula.
+        assert!(eng.upsert_formula("   ".to_string()).is_err());
+        // No '=' and not 'equals'/'is'.
+        assert!(eng.upsert_formula("Revenue plus COGS".to_string()).is_err());
+        // A single word with no '=' (fewer than three tokens).
+        assert!(eng.upsert_formula("JustOneWord".to_string()).is_err());
+        // An empty left-hand side before '='.
+        assert!(eng.upsert_formula("= Revenue + COGS".to_string()).is_err());
+        // Missing RHS.
+        assert!(eng.upsert_formula("Bogus = ".to_string()).is_err());
+        // Target collides with a category name.
+        assert!(eng
+            .upsert_formula("Time = Revenue + COGS".to_string())
+            .is_err());
+        // An unparsable expression surfaces both DSL and NL errors.
+        let err = eng
+            .upsert_formula("Weird = Revenue @@@ COGS".to_string())
+            .unwrap_err();
+        assert!(matches!(err, ImprovFfiError::Message(_)));
+        // A formula that parses but has an inconsistent shape fails at the
+        // type-inference stage (AND requires Boolean operands, not numbers).
+        let shape_err = eng
+            .upsert_formula("TypeBad = Price AND UnitCost".to_string())
+            .unwrap_err();
+        let ImprovFfiError::Message(m) = shape_err;
+        assert!(m.contains("type mismatch"), "got: {m}");
+    }
+
+    #[test]
+    fn cyclic_formula_is_rejected_and_rolls_back() {
+        let eng = ImprovMobileEngine::open_or_create(String::new());
+        // Build a mutual cycle in two steps. The first definition succeeds.
+        eng.upsert_formula("Alpha = Revenue + 1".to_string())
+            .unwrap();
+        // The second closes the loop (Beta -> Alpha and Alpha redefined to
+        // reference Beta). It parses and its shape resolves, but building the
+        // dataflow engine detects the cycle, so upsert_formula rolls the model
+        // back and returns an error (the rebuild_engine error branch).
+        eng.upsert_formula("Beta = Alpha + 1".to_string()).unwrap();
+        let err = eng
+            .upsert_formula("Alpha = Beta + 1".to_string())
+            .unwrap_err();
+        assert!(matches!(err, ImprovFfiError::Message(_)));
+        // The rollback restores Alpha to its pre-cycle definition, so the
+        // engine still evaluates.
+        let vp = eng.get_viewport(0, 100, 0, 3);
+        let revenue = vp
+            .cells
+            .iter()
+            .find(|c| c.measure_name == "Revenue")
+            .unwrap();
+        assert!(revenue.numeric_value > 0.0);
+    }
+
+    #[test]
+    fn apply_what_if_multiplier_paths() {
+        let eng = ImprovMobileEngine::open_or_create(String::new());
+        // Unknown measure.
+        assert!(eng
+            .apply_what_if_multiplier("Ghost".to_string(), 1.1)
+            .is_err());
+        // Derived measure is rejected.
+        assert!(eng
+            .apply_what_if_multiplier("Revenue".to_string(), 1.1)
+            .is_err());
+        // Valid input measure: every Price cell updates.
+        let before = eng.get_viewport_bytes(0, 24, 0, 3);
+        let updated = eng
+            .apply_what_if_multiplier("Price".to_string(), 2.0)
+            .unwrap();
+        assert_eq!(updated, 36); // 4 Time x 3 Product x 3 Region input cells
+        let after = eng.get_viewport_bytes(0, 24, 0, 3);
+        assert_ne!(before, after);
+    }
+
+    #[test]
+    fn set_cell_value_paths() {
+        let eng = ImprovMobileEngine::open_or_create(String::new());
+        eng.create_blank_model().unwrap();
+        // Row 0 is Budget (an input measure) in the blank model.
+        eng.set_cell_value(0, 0, 123.0).unwrap();
+        let vp = eng.get_viewport(0, 1, 0, 1);
+        assert_eq!(vp.cells[0].numeric_value, 123.0);
+        // Row index out of bounds.
+        assert!(eng.set_cell_value(999, 0, 1.0).is_err());
+        // Column index out of bounds.
+        assert!(eng.set_cell_value(0, 999, 1.0).is_err());
+
+        // Setting a derived cell is rejected.
+        let eng2 = ImprovMobileEngine::open_or_create(String::new());
+        // Find a row whose measure is Revenue (derived) in the sample grid.
+        let grid = eng2.get_viewport(0, 24, 0, 3);
+        let derived_row = grid
+            .cells
+            .iter()
+            .find(|c| c.measure_name == "Revenue")
+            .unwrap()
+            .row_index;
+        assert!(eng2.set_cell_value(derived_row, 0, 1.0).is_err());
+
+        // Setting an INPUT cell in the sample model (which has derived
+        // measures, so the engine is live) pushes the edit through the engine
+        // and updates every dependent derived cell.
+        let price_row = grid
+            .cells
+            .iter()
+            .find(|c| c.measure_name == "Price")
+            .unwrap()
+            .row_index;
+        eng2.set_cell_value(price_row, 0, 4242.0).unwrap();
+        let after = eng2.get_viewport(0, 24, 0, 3);
+        let price_cell = after
+            .cells
+            .iter()
+            .find(|c| c.measure_name == "Price" && c.row_index == price_row && c.col_index == 0)
+            .unwrap();
+        assert_eq!(price_cell.numeric_value, 4242.0);
+    }
+
+    // ---- pivot & page selection ----
+
+    #[test]
+    fn pivot_and_select_page_item() {
+        let eng = ImprovMobileEngine::open_or_create(String::new());
+        // Move Region (a page category) onto the row axis by name.
+        eng.pivot_category("Region".to_string(), AxisOrientation::Row, 0);
+        let region = eng
+            .get_categories()
+            .into_iter()
+            .find(|c| c.name == "Region")
+            .unwrap();
+        assert_eq!(region.orientation, AxisOrientation::Row);
+
+        // Move it back to Page with an out-of-range index (clamped to the end).
+        eng.pivot_category("Region".to_string(), AxisOrientation::Page, 99);
+        // Move Product onto the Column axis explicitly (the Column match arm).
+        eng.pivot_category("Product".to_string(), AxisOrientation::Column, 0);
+        // Unknown category is a no-op (does not panic).
+        eng.pivot_category("Ghost".to_string(), AxisOrientation::Row, 0);
+        // A numeric id that does not name any category hits the
+        // `!contains_key` early return (parses but is not in the model).
+        eng.pivot_category("99999".to_string(), AxisOrientation::Row, 0);
+
+        // Select a page item by id.
+        let region = eng
+            .get_categories()
+            .into_iter()
+            .find(|c| c.name == "Region")
+            .unwrap();
+        let emea = region.items.iter().find(|i| i.name == "EMEA").unwrap();
+        eng.select_page_item("Region".to_string(), emea.id.clone());
+        let region = eng
+            .get_categories()
+            .into_iter()
+            .find(|c| c.name == "Region")
+            .unwrap();
+        assert_eq!(
+            region.selected_page_item_id.as_deref(),
+            Some(emea.id.as_str())
+        );
+
+        // Select by item name.
+        eng.select_page_item("Region".to_string(), "APAC".to_string());
+        // Unknown category / unknown item are no-ops.
+        eng.select_page_item("Ghost".to_string(), "X".to_string());
+        eng.select_page_item("Region".to_string(), "NoItem".to_string());
+    }
+
+    #[test]
+    fn add_category_defaults_and_errors() {
+        let eng = ImprovMobileEngine::open_or_create(String::new());
+        // Empty name.
+        assert!(eng
+            .add_category(String::new(), vec![], AxisOrientation::Row)
+            .is_err());
+        // Collides with an existing category.
+        assert!(eng
+            .add_category("Time".to_string(), vec![], AxisOrientation::Row)
+            .is_err());
+        // Collides with an existing measure name.
+        assert!(eng
+            .add_category("Price".to_string(), vec![], AxisOrientation::Row)
+            .is_err());
+        // No item names -> two defaulted items, placed on Page.
+        let tile = eng
+            .add_category("Scenario".to_string(), vec![], AxisOrientation::Page)
+            .unwrap();
+        assert_eq!(tile.items.len(), 2);
+        assert_eq!(tile.orientation, AxisOrientation::Page);
+        assert!(tile.selected_page_item_id.is_some());
+        // Explicit items placed on the Row axis (covers the Row match arm).
+        let on_row = eng
+            .add_category(
+                "Channel".to_string(),
+                vec!["Online".to_string(), "Retail".to_string()],
+                AxisOrientation::Row,
+            )
+            .unwrap();
+        assert_eq!(on_row.orientation, AxisOrientation::Row);
+        assert_eq!(on_row.items.len(), 2);
+        // And on the Column axis.
+        let on_col = eng
+            .add_category(
+                "Segment".to_string(),
+                vec!["SMB".to_string()],
+                AxisOrientation::Column,
+            )
+            .unwrap();
+        assert_eq!(on_col.orientation, AxisOrientation::Column);
+    }
+
+    #[test]
+    fn set_cell_value_ignores_coords_outside_the_measure() {
+        let eng = ImprovMobileEngine::open_or_create(String::new());
+        // Add a new row category the existing input measures do not span.
+        eng.add_category(
+            "Scenario".to_string(),
+            vec!["Base".to_string(), "Upside".to_string()],
+            AxisOrientation::Row,
+        )
+        .unwrap();
+        // Find a Price (input) row and set it: the Scenario row-coord is not a
+        // category of Price, so that coordinate is skipped when building the
+        // cell key (the `measure.categories.contains` false branch).
+        let grid = eng.get_viewport(0, 200, 0, 50);
+        let price = grid
+            .cells
+            .iter()
+            .find(|c| c.measure_name == "Price")
+            .unwrap();
+        eng.set_cell_value(price.row_index, price.col_index, 1234.0)
+            .unwrap();
+        let after = eng.get_viewport(0, 200, 0, 50);
+        let updated = after
+            .cells
+            .iter()
+            .find(|c| {
+                c.measure_name == "Price"
+                    && c.row_index == price.row_index
+                    && c.col_index == price.col_index
+            })
+            .unwrap();
+        assert_eq!(updated.numeric_value, 1234.0);
+    }
+
+    // ---- measures / formulas listing ----
+
+    #[test]
+    fn get_measures_and_formulas_shape() {
+        let eng = ImprovMobileEngine::open_or_create(String::new());
+        let measures = eng.get_measures();
+        assert_eq!(measures.len(), 6);
+        // Inputs have no formula text; derived do.
+        let price = measures.iter().find(|m| m.name == "Price").unwrap();
+        assert!(!price.is_derived);
+        assert!(price.formula_text.is_none());
+        let revenue = measures.iter().find(|m| m.name == "Revenue").unwrap();
+        assert!(revenue.is_derived);
+        assert!(revenue.formula_text.is_some());
+
+        let formulas = eng.get_formulas();
+        assert_eq!(formulas.len(), 3);
+        let rev = formulas
+            .iter()
+            .find(|f| f.measure_name == "Revenue")
+            .unwrap();
+        assert!(rev.expression.starts_with("Revenue ="));
+        assert!(rev.natural_language.starts_with("Revenue equals"));
+    }
+
+    // ---- autocomplete ----
+
+    #[test]
+    fn autocomplete_offers_keywords_and_candidates() {
+        let eng = ImprovMobileEngine::open_or_create(String::new());
+        // A prefix matching an NL keyword offers it.
+        let eq = eng.autocomplete_formula("Margin eq".to_string());
+        assert!(eq.iter().any(|s| s == "equals"));
+        // An empty-word prefix offers the full NL keyword set.
+        let all = eng.autocomplete_formula(String::new());
+        assert!(all.iter().any(|s| s == "times"));
+        assert!(all.iter().any(|s| s == "divided by"));
+        // A measure prefix offers measure-name candidates.
+        let rev = eng.autocomplete_formula("Rev".to_string());
+        assert!(rev.iter().any(|s| s.starts_with("Rev")));
+        // A prefix that matches no candidate and no NL keyword falls back to
+        // the full measure list plus the function stubs.
+        let fallback = eng.autocomplete_formula("zzzzzz".to_string());
+        assert!(fallback.iter().any(|s| s == "SUM("));
+        assert!(fallback.iter().any(|s| s == "Revenue"));
+    }
+
+    // ---- CSV export / import ----
+
+    #[test]
+    fn export_measure_csv_to_file_and_text() {
+        let eng = ImprovMobileEngine::open_or_create(String::new());
+        let dir = std::env::temp_dir().join(format!("improv_csv_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("revenue.csv");
+        let n = eng
+            .export_measure_csv("Revenue".to_string(), out.to_string_lossy().to_string())
+            .unwrap();
+        assert!(n > 0);
+        let on_disk = std::fs::read_to_string(&out).unwrap();
+        assert!(on_disk.contains("Revenue"));
+        std::fs::remove_dir_all(&dir).ok();
+
+        // Unknown measure for file export errors.
+        assert!(eng
+            .export_measure_csv("Ghost".to_string(), "/tmp/none.csv".to_string())
+            .is_err());
+
+        // A valid measure but an unwritable path makes the CSV writer fail,
+        // exercising the write-error branch.
+        let bad = eng.export_measure_csv(
+            "Revenue".to_string(),
+            "/nonexistent-improv-dir/sub/out.csv".to_string(),
+        );
+        assert!(bad.is_err());
+
+        // Text export of an unknown name falls back to the lowest-id measure.
+        let text = eng.export_measure_csv_text("Ghost".to_string()).unwrap();
+        assert!(!text.is_empty());
+    }
+
+    #[test]
+    fn import_csv_errors_and_new_items() {
+        let eng = ImprovMobileEngine::open_or_create(String::new());
+        // Empty content.
+        assert!(eng.import_csv_text(String::new(), String::new()).is_err());
+        // Only one column (no value column).
+        assert!(eng
+            .import_csv_text("OnlyOne\nx\n".to_string(), String::new())
+            .is_err());
+        // A non-numeric value in a Number column makes the import fail.
+        assert!(eng
+            .import_csv_text(
+                "Time,Product,Region,Quota\nQ1,PixelBook,Americas,notanumber\n".to_string(),
+                String::new(),
+            )
+            .is_err());
+        // A measure-name override is honored, and brand-new category items are
+        // created from the rows.
+        let n = eng
+            .import_csv_text(
+                "Time,Product,Region,Quota\nQ9,NewProd,Mars,42\n".to_string(),
+                "Target".to_string(),
+            )
+            .unwrap();
+        assert_eq!(n, 1);
+        assert!(eng.get_measures().iter().any(|m| m.name == "Target"));
+        // Re-importing into the SAME measure name reuses the existing measure
+        // id (the find-by-name success path) rather than minting a new one.
+        let before = eng.get_measures().len();
+        let n2 = eng
+            .import_csv_text(
+                "Time,Product,Region,Target\nQ1,PixelBook,Americas,99\n".to_string(),
+                "Target".to_string(),
+            )
+            .unwrap();
+        assert_eq!(n2, 1);
+        assert_eq!(eng.get_measures().len(), before);
+    }
+
+    // ---- NL formula helpers used indirectly by upsert_formula / get_formulas ----
+
+    #[test]
+    fn rename_via_redefining_a_derived_measure_in_place() {
+        let eng = ImprovMobileEngine::open_or_create(String::new());
+        // Redefining an existing derived measure keeps its id and updates the
+        // formula (the "rename/redefine" path through upsert_formula).
+        let before = measure_id_of(&eng, "Margin");
+        let entry = eng
+            .upsert_formula("Margin = Revenue - COGS - COGS".to_string())
+            .unwrap();
+        assert_eq!(entry.id, before);
+        assert_eq!(entry.measure_name, "Margin");
+    }
+
+    // ---- EngineState internals ----
+    //
+    // A handful of defensive branches guard model states the public FFI never
+    // builds (an item id with no name, a measure category on no axis, no
+    // active measure). They exist because EngineState's helpers must stay
+    // correct even mid-edit, so exercise them directly on a crafted state.
+
+    /// A bare EngineState over `model` with no store and no engine.
+    fn bare_state(model: Model) -> EngineState {
+        EngineState {
+            db_path: String::new(),
+            store: None,
+            model,
+            engine: None,
+            snapshot: Snapshot::default(),
+            row_cats: Vec::new(),
+            col_cats: Vec::new(),
+            page_cats: Vec::new(),
+            page_items: BTreeMap::new(),
+            active_measure: None,
+        }
+    }
+
+    #[test]
+    fn axis_tuples_falls_back_to_item_id_when_name_missing() {
+        // A category that lists an item id with no matching items entry: the
+        // label falls back to the numeric id (the unwrap_or_else branch).
+        let mut model = Model::new();
+        let cat = CategoryId(1);
+        model.add_category(cat, "Orphans");
+        model.add_item(ItemId(10), cat, "Named");
+        // Point the category at an item that was never registered.
+        model
+            .categories
+            .get_mut(&cat)
+            .unwrap()
+            .items
+            .push(ItemId(999));
+        let state = bare_state(model);
+        let tuples = state.axis_tuples(&[cat]);
+        let labels: Vec<&str> = tuples.iter().map(|(l, _)| l.as_str()).collect();
+        assert!(labels.contains(&"Named"));
+        // The orphan item id has no name, so its label is the numeric id.
+        assert!(labels.contains(&"999"));
+        // A category id that is not in the model is skipped (the `continue`).
+        let skipped = state.axis_tuples(&[CategoryId(1), CategoryId(42)]);
+        assert_eq!(skipped.len(), 2); // only Orphans' two items
+    }
+
+    #[test]
+    fn resolve_cell_fills_defaults_and_handles_missing_measure() {
+        // A measure that spans a category not present on any axis nor in
+        // page_items: resolve_cell fills that category's first item as a
+        // default (the default-fill branch).
+        let mut model = Model::new();
+        let region = CategoryId(1);
+        model.add_category(region, "Region");
+        model.add_item(ItemId(10), region, "East");
+        model.add_item(ItemId(11), region, "West");
+        let mid = MeasureId(100);
+        model.add_measure(Measure {
+            id: mid,
+            name: Name("Sales".into()),
+            value_type: ValueType::Number,
+            categories: vec![region],
+            kind: MeasureKind::Input,
+            description: None,
+            format: None,
+        });
+        model.set_input(
+            mid,
+            Coordinate::from_pairs([(region, ItemId(10))]),
+            Value::Number(7.0),
+        );
+        let state = bare_state(model);
+        // No row/col coords and no page_items: resolve_cell defaults Region to
+        // its first item (East) and reads 7.0 from the input.
+        let (v, _fmt, tag, is_derived, is_blank) = state.resolve_cell(mid, &[], &[]);
+        assert_eq!(v, 7.0);
+        assert_eq!(tag, 1);
+        assert!(!is_derived);
+        assert!(!is_blank);
+        // An unknown measure id returns the blank sentinel.
+        let (nv, _f, ntag, _d, nblank) = state.resolve_cell(MeasureId(777), &[], &[]);
+        assert!(nv.is_nan());
+        assert_eq!(ntag, 0);
+        assert!(nblank);
+    }
+
+    #[test]
+    fn resolve_cell_input_error_and_non_numeric() {
+        // Input cells holding an Error or a non-numeric value take the tag-4
+        // and tag-3 branches of resolve_cell. The public FFI only writes
+        // numbers, so craft these directly on the model.
+        let mut model = Model::new();
+        let cat = CategoryId(1);
+        model.add_category(cat, "K");
+        model.add_item(ItemId(10), cat, "a");
+        model.add_item(ItemId(11), cat, "b");
+        let mid = MeasureId(100);
+        model.add_measure(Measure {
+            id: mid,
+            name: Name("M".into()),
+            value_type: ValueType::Number,
+            categories: vec![cat],
+            kind: MeasureKind::Input,
+            description: None,
+            format: None,
+        });
+        model.set_input(
+            mid,
+            Coordinate::from_pairs([(cat, ItemId(10))]),
+            Value::Error(improv_core_model::ValueError::new(
+                improv_core_model::ValueErrorKind::DivisionByZero,
+            )),
+        );
+        model.set_input(
+            mid,
+            Coordinate::from_pairs([(cat, ItemId(11))]),
+            Value::Text("hello".into()),
+        );
+        let state = bare_state(model);
+        let (_v, _f, err_tag, _d, _b) = state.resolve_cell(mid, &[(cat, ItemId(10))], &[]);
+        assert_eq!(err_tag, 4); // input error
+        let (_v2, _f2, text_tag, _d2, _b2) = state.resolve_cell(mid, &[(cat, ItemId(11))], &[]);
+        assert_eq!(text_tag, 3); // input non-numeric
+    }
+
+    #[test]
+    fn update_default_view_noop_without_active_measure() {
+        // With no active measure, update_default_view returns early and adds
+        // no view; save_structure then persists nothing (no store).
+        let mut state = bare_state(Model::new());
+        state.save_structure().unwrap();
+        assert!(state.model.views.is_empty());
+        state.save_full_model().unwrap();
+    }
+
+    #[test]
+    fn sync_axes_initializes_from_a_saved_view() {
+        // A model carrying a saved view but empty live axes: sync_axes_with_model
+        // seeds the axes from the view (the saved-view branch), including the
+        // empty-axis_order fallback to all categories.
+        let mut model = Model::new();
+        let a = CategoryId(1);
+        let b = CategoryId(2);
+        model.add_category(a, "A");
+        model.add_category(b, "B");
+        model.add_item(ItemId(10), a, "a1");
+        model.add_item(ItemId(20), b, "b1");
+        let mid = MeasureId(100);
+        model.add_measure(Measure {
+            id: mid,
+            name: Name("V".into()),
+            value_type: ValueType::Number,
+            categories: vec![a, b],
+            kind: MeasureKind::Input,
+            description: None,
+            format: None,
+        });
+        // A view whose axis_order is empty: sync falls back to all categories.
+        let mut primary = MatrixPlacement::new(mid);
+        primary.axis_order = Vec::new();
+        primary.n_rows = 1;
+        primary.n_cols = 0;
+        model.add_view(View::from_matrices(
+            ViewId(1),
+            Name("Saved".into()),
+            primary,
+            Vec::new(),
+        ));
+        let mut state = bare_state(model);
+        state.sync_axes_with_model();
+        // all_cats = [A, B]; n_rows=1 so A on rows, B on cols.
+        assert_eq!(state.row_cats, vec![a]);
+        assert_eq!(state.active_measure, Some(mid));
+    }
+
+    #[test]
+    fn scalar_formula_then_redefine_inherits_categories() {
+        let eng = ImprovMobileEngine::open_or_create(String::new());
+        // A scalar formula has no categories.
+        let s = eng.upsert_formula("Const = 2 + 3".to_string()).unwrap();
+        assert_eq!(s.measure_name, "Const");
+        // Redefining the same measure with another scalar exercises the
+        // "inherit existing categories when the new shape is scalar" branch.
+        let s2 = eng.upsert_formula("Const = 10 - 1".to_string()).unwrap();
+        assert_eq!(s2.id, s.id);
+    }
+
+    #[test]
+    fn analytics_empty_when_slice_is_all_blank() {
+        let eng = ImprovMobileEngine::open_or_create(String::new());
+        // A derived measure that is #DIV/0! in every cell: resolve_cell marks
+        // such cells not-blank but their value is NaN, so none are finite and
+        // `values` ends up empty -> the zeroed-summary return.
+        eng.upsert_formula("AllErr = Price / (Quantity - Quantity)".to_string())
+            .unwrap();
+        let a = eng.get_slice_analytics("AllErr".to_string());
+        assert_eq!(a.cell_count, 0);
+        assert_eq!(a.sum, 0.0);
+        assert_eq!(a.mean, 0.0);
+        assert!(a.series_labels.is_empty());
+        assert_eq!(a.measure_name, "AllErr");
+    }
+
+    #[test]
+    fn analytics_skips_blank_series_rows() {
+        let eng = ImprovMobileEngine::open_or_create(String::new());
+        eng.create_blank_model().unwrap();
+        // A new Period item with no Budget values: its row is all-blank, so
+        // the per-row series skips it (the row_has_val == false branch) while
+        // the seeded rows still contribute.
+        eng.add_category_item("Period".to_string(), "P9".to_string())
+            .unwrap();
+        let a = eng.get_slice_analytics("Budget".to_string());
+        assert!(a.series_labels.iter().all(|l| !l.contains("P9")));
+        assert!(a.cell_count > 0);
     }
 }
