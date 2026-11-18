@@ -25,8 +25,12 @@ fi
 
 # Columns of `--summary-only`: Filename Regions Missed Cover Functions Missed
 # Executed Lines Missed Cover Branches Missed Cover. Aggregate per crate.
+# The four binary crates share one build script, packaging/windows/resource.rs,
+# named by a ../.. path, so llvm-cov reports it under a crate "..". A build
+# script runs on the host at build time, not in the shipped program, so it is
+# not part of the runtime coverage gate; skip it.
 awk -v min="$min" '
-	NR > 2 && $1 ~ /\.rs$/ {
+	NR > 2 && $1 ~ /\.rs$/ && $1 !~ /^\.\./ {
 		split($1, p, "/"); c = p[1]
 		F[c] += $5; FM[c] += $6; B[c] += $11; BM[c] += $12
 	}
