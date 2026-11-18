@@ -22,6 +22,10 @@ ignore = [
     # mentat. An unmaintained advisory is not a vulnerability. Revisit if a
     # CVE lands, or when the ecosystem moves to jiff.
     "RUSTSEC-2026-0543", # chrono unmaintained
+    # basic-toml is unmaintained: it reaches the tree only through
+    # uniffi_bindgen (the Android FFI crate's build-time binding generator),
+    # never the shipped cdylib. As allowlisted in gui_cosmic/deny.toml.
+    "RUSTSEC-2026-0374", # basic-toml unmaintained (uniffi_bindgen, build-time)
 ]
 
 [licenses]

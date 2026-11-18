@@ -1,0 +1,24 @@
+[package]
+name = "improv_android_ffi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "improv_android_ffi"
+crate-type = ["cdylib"]
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+
+[dependencies]
+improv_core_model = { path = "../crates/core_model" }
+improv_engine = { path = "../crates/engine" }
+improv_nl_formula = { path = "../crates/nl_formula" }
+improv_storage_mentat = { path = "../crates/storage_mentat" }
+improv_store = { path = "../crates/store" }
+improv_storage_csv = { path = "../crates/storage_csv" }
+improv_client = { path = "../crates/client" }
+thiserror.workspace = true
+uniffi = { version = "0.28", features = ["cli"] }

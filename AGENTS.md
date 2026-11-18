@@ -119,6 +119,8 @@ Cargo workspace, `crates/*`: `core_model`, `engine`, `nl_formula`,
 `storage_mentat`, `storage_pg`, `storage_duckdb`, `store`, `storage_sql`, `storage_csv`,
 `data_source`, `extfn`, `verified` (Verus-proven kernels), `cli`, `tui`,
 `gui`, `server`, `pg_model`, `duckdb_model`,
+`improv_android_ffi` (the UniFFI bindings that expose the engine to the
+Android app; a workspace member, built as a `cdylib` by `cargo ndk`),
 `pg_improv` (the Postgres extension: its own workspace and `Cargo.lock`,
 excluded from the root because pgrx needs `pg_config` to build), and
 `duckdb_improv` (the DuckDB extension `improv`: its own workspace and
