@@ -26,6 +26,10 @@ ignore = [
     # 0.4.3, its newest release, still uses it). Not built for a desktop
     # target. Revisit with each libcosmic bump.
     "RUSTSEC-2026-0441", # pin-utils
+    # chrono unmaintained (2026-11): via arrow/duckdb and cedar here, no safe
+    # upgrade or drop-in replacement. As in the root deny.toml; an
+    # unmaintained advisory is not a vulnerability.
+    "RUSTSEC-2026-0543", # chrono
 ]
 
 [licenses]
