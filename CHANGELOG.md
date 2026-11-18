@@ -7,6 +7,9 @@ this project follows [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **A Nix `android` dev shell** (`nix develop .#android`) provides the
+  Android SDK (platform 35), NDK r27c, `cargo-ndk`, and the Rust Android
+  targets, so the APK builds without a hand-installed SDK.
 - **An Android port** (`android/`, contributed by David Gerbino): a new
   `improv_android_ffi` workspace crate exposes the engine to a Jetpack
   Compose app through UniFFI. The engine is unchanged; the crate adapts its

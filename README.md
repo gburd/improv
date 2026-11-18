@@ -109,6 +109,10 @@ Linux, `bubblewrap` for the sandbox.
 The Postgres extension is built separately with `cargo-pgrx`; see
 [`crates/pg_improv/README.md`](crates/pg_improv/README.md).
 
+The Android app is built with its own toolchain; `nix develop .#android`
+provides the SDK, NDK and `cargo-ndk`, and `cd android && ./gradlew
+assembleDebug` produces the APK. See [`android/README.md`](android/README.md).
+
 ## Quick start
 
 Build the 3-D sample model (Time × Product × Region, with Price, UnitCost,
