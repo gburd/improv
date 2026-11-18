@@ -25,12 +25,14 @@ fi
 
 # Columns of `--summary-only`: Filename Regions Missed Cover Functions Missed
 # Executed Lines Missed Cover Branches Missed Cover. Aggregate per crate.
-# The four binary crates share one build script, packaging/windows/resource.rs,
-# named by a ../.. path, so llvm-cov reports it under a crate "..". A build
-# script runs on the host at build time, not in the shipped program, so it is
-# not part of the runtime coverage gate; skip it.
+# The four binary crates share one build script, packaging/windows/resource.rs.
+# llvm-cov names it relative to the paths' common base, so it shows up either
+# as ../packaging/... (the base is under crates/) or packaging/... (the base
+# is the repo root, once a root-level crate like improv_android_ffi widens it).
+# A build script runs on the host at build time and ships in no binary, so it
+# is not part of the runtime coverage gate; skip it either way.
 awk -v min="$min" '
-	NR > 2 && $1 ~ /\.rs$/ && $1 !~ /^\.\./ {
+	NR > 2 && $1 ~ /\.rs$/ && $1 !~ /^\.\./ && $1 !~ /^packaging\// {
 		split($1, p, "/"); c = p[1]
 		F[c] += $5; FM[c] += $6; B[c] += $11; BM[c] += $12
 	}
