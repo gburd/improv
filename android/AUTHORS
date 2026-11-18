@@ -1,0 +1,15 @@
+The Improv Android port
+========================
+
+The Android application under `android/` (the Jetpack Compose UI, the
+`ImprovMobileEngine` wiring, and the direct-ByteBuffer viewport reader) was
+written by:
+
+  David Gerbino <david.gerbino@dmgerbino.com>
+  https://github.com/dmgerbino/improv-android
+
+It drives the shared Rust engine through the `improv_android_ffi` UniFFI crate
+in the Improv workspace.
+
+Improv itself is by Greg Burd <greg@burd.me> and contributors; see the
+repository root for the full project.
