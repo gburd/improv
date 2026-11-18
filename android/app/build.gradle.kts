@@ -1,5 +1,6 @@
 plugins {
   alias(libs.plugins.android.application)
+  alias(libs.plugins.kotlin.android)
   alias(libs.plugins.compose.compiler)
 }
 
@@ -11,7 +12,10 @@ val cargoTargetDir = System.getenv("CARGO_TARGET_DIR")
 android {
   namespace = "llc.improv.app"
   compileSdk = 35
-  // shortcut: NDK r27c; confirm this exact version is installed on the build host (sdkmanager --list).
+  // Pin build-tools to the version the Nix SDK provides; AGP would otherwise
+  // reach for its built-in default (34.0.0) and fail to auto-install it into
+  // the read-only Nix store.
+  buildToolsVersion = "35.0.0"
   ndkVersion = "27.2.12479018"
 
   defaultConfig {
