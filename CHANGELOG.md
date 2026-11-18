@@ -13,7 +13,8 @@ this project follows [Semantic Versioning](https://semver.org/).
 - **An Android port** (`android/`, contributed by David Gerbino): a new
   `improv_android_ffi` workspace crate exposes the engine to a Jetpack
   Compose app through UniFFI. The engine is unchanged; the crate adapts its
-  types across the FFI boundary.
+  types across the FFI boundary.  CI builds the debug APK and runs the
+  FFI tests on each push.
 
 - **A Windows installer, for x64 and native Arm.** Each release carries
   `improv-X.Y.Z-x64.msi` and `improv-X.Y.Z-arm64.msi` (built with the WiX
