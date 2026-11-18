@@ -90,9 +90,9 @@ dependencies {
   implementation(libs.androidx.compose.ui.tooling.preview)
   implementation(libs.androidx.compose.material3)
   // Adaptive layout (WindowSizeClass + foldable posture) is a separate artifact group,
-  // not part of the Compose BOM, so it carries an explicit version in the catalog.
+  // not part of the Compose BOM, so it carries an explicit version in the catalog.  It also
+  // supplies the androidx.window.core.layout WindowSizeClass the adaptive root reads.
   implementation(libs.androidx.compose.material3.adaptive)
-  implementation(libs.androidx.compose.material3.window.sizeclass)
   // Tooling
   debugImplementation(libs.androidx.compose.ui.tooling)
   // Instrumented tests
