@@ -72,6 +72,9 @@ this project follows [Semantic Versioning](https://semver.org/).
   descriptions inside two MIT crates.
 
 ### Changed
+- **The workspace, the DuckDB extension and the COSMIC GUI move to
+  0.15.0,** to match pg_improv (which led with its 0.14.0->0.15.0 catalog
+  upgrade). All components of a release carry one version again.
 
 - **improv-cosmic: a copied range's HTML marks its headers.** The row and
   column labels are `<th>` cells, and a paste skips `<th>` cells, so a
