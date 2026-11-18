@@ -16,3 +16,8 @@
 .externalNativeBuild
 .cxx
 local.properties
+
+# Signing material for a release AAB: never commit it (this repo is public).
+keystore.properties
+*.jks
+*.keystore

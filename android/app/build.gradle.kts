@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
   alias(libs.plugins.android.application)
   alias(libs.plugins.kotlin.android)
@@ -31,6 +33,31 @@ android {
     getByName("release").jniLibs.srcDir(layout.buildDirectory.dir("rustJniLibs/release").get().asFile)
   }
 
+  // The upload key for a release AAB.  Never committed: the values come from
+  // android/keystore.properties (gitignored) or, failing that, the
+  // IMPROV_KEYSTORE_* environment variables.  When neither is present (a plain
+  // developer or CI debug build) the release build stays unsigned; only
+  // `bundleRelease`/`assembleRelease` with the key configured produce a signed
+  // artefact to upload to Google Play.  See android/docs/RELEASING.md.
+  val keystorePropsFile = rootProject.file("keystore.properties")
+  val keystoreProps = Properties().apply {
+    if (keystorePropsFile.exists()) keystorePropsFile.inputStream().use { load(it) }
+  }
+  fun prop(key: String, env: String): String? =
+    keystoreProps.getProperty(key) ?: System.getenv(env)
+  val storeFilePath = prop("storeFile", "IMPROV_KEYSTORE_FILE")
+
+  signingConfigs {
+    if (storeFilePath != null) {
+      create("release") {
+        storeFile = file(storeFilePath)
+        storePassword = prop("storePassword", "IMPROV_KEYSTORE_PASSWORD")
+        keyAlias = prop("keyAlias", "IMPROV_KEY_ALIAS")
+        keyPassword = prop("keyPassword", "IMPROV_KEY_PASSWORD")
+      }
+    }
+  }
+
   buildTypes {
     debug {
       enableUnitTestCoverage = true
@@ -39,6 +66,7 @@ android {
       isMinifyEnabled = true
       isShrinkResources = true
       proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+      signingConfig = signingConfigs.findByName("release")
     }
   }
   lint {
