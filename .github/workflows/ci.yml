@@ -650,7 +650,22 @@ jobs:
           workspaces: improv
       - name: FFI crate tests
         working-directory: improv
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/improv/target
         run: cargo test -p improv_android_ffi
+      # The app's JVM unit tests (ModelStore, ViewModel) load the host-built
+      # FFI cdylib through JNA from $CARGO_TARGET_DIR/debug. `cargo test` builds
+      # a test harness, not the cdylib, so build the .so explicitly first.
+      - name: Build the host FFI library
+        working-directory: improv
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/improv/target
+        run: cargo build -p improv_android_ffi
+      - name: App unit tests (ModelStore, ViewModel)
+        working-directory: improv/android
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/improv/target
+        run: ./gradlew --no-daemon testDebugUnitTest
       - name: Debug APK
         working-directory: improv/android
         env:
