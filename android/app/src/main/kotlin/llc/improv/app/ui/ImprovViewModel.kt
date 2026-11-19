@@ -3,6 +3,8 @@ package llc.improv.app.ui
 import androidx.lifecycle.ViewModel
 import llc.improv.app.DirectViewportReader
 import llc.improv.app.populateDirectByteBuffer
+import llc.improv.app.workbook.ModelStore
+import llc.improv.app.workbook.WorkbookEntry
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -17,9 +19,15 @@ import uniffi.improv_android_ffi.ViewportCell
 import uniffi.improv_android_ffi.ViewportSnapshot
 import java.nio.ByteBuffer
 
+/**
+ * The spreadsheet UI state for the currently open workbook.  Every field
+ * defaults to a neutral empty value; real content is seeded from the opened
+ * model in [ImprovViewModel.refreshFromEngine].  Nothing here is tied to a
+ * particular demo model.
+ */
 data class ImprovUiState(
-    val activeModelId: String = ImprovViewModel.DEFAULT_MODEL_ID,
-    val activeViewName: String = "3D Financial Cube (Default)",
+    val activeModelId: String? = null,
+    val activeViewName: String = "",
     val rowCategories: List<CategoryTile> = emptyList(),
     val columnCategories: List<CategoryTile> = emptyList(),
     val pageCategories: List<CategoryTile> = emptyList(),
@@ -36,20 +44,20 @@ data class ImprovUiState(
     ),
     val selectedRow: Int = 0,
     val selectedCol: Int = 0,
-    val selectedCellCoordinate: String = "Time:Q1|Product:PixelBook|Region:Americas|Measure:Price",
+    val selectedCellCoordinate: String = "",
     val selectedCellFormatted: String = "",
     val selectedCellEditBuffer: String = "",
     val selectedCellIsDerived: Boolean = false,
     val scrollRowIndex: Int = 0,
     val scrollColIndex: Int = 0,
-    val formulaInput: String = "Margin = Revenue - COGS",
+    val formulaInput: String = "",
     val autocompleteSuggestions: List<String> = emptyList(),
     val formulaError: String? = null,
     val directBufferBytesWritten: Int = 0,
     val directBufferSelectedValue: Double = Double.NaN,
-    val activeAnalyticsMeasure: String = "Margin",
+    val activeAnalyticsMeasure: String = "",
     val sliceAnalytics: SliceAnalyticsSummary = SliceAnalyticsSummary(
-        measureName = "Margin",
+        measureName = "",
         cellCount = 0u,
         sum = 0.0,
         mean = 0.0,
@@ -60,41 +68,199 @@ data class ImprovUiState(
         seriesLabels = emptyList(),
         seriesValues = emptyList(),
     ),
-    val csvImportExportBuffer: String =
-        "Time,Product,Region,TargetQuota\nQ1,PixelBook,Americas,180000\nQ2,PixelPhone,Americas,350000",
-    val statusMessage: String = "Ready — 3D model (Time × Product × Region) loaded",
+    val csvImportExportBuffer: String = "",
+    val statusMessage: String = "",
 )
 
+/** The workbook library state: what the home screen lists when no model is open. */
+data class LibraryUiState(
+    val workbooks: List<WorkbookEntry> = emptyList(),
+    val errorMessage: String? = null,
+)
+
+/**
+ * Owns the workbook library and the single live engine for the open model.
+ *
+ * The ViewModel no longer takes one engine for life.  It holds a [ModelStore]
+ * and an engine factory, opens an engine when the user opens a workbook, and
+ * closes it when they return to the library, so one process can move between
+ * many `.db` stores.  Both the store and the factory are injected, which keeps
+ * the model-switching and seeding logic unit-testable: a test passes a
+ * temp-dir [ModelStore] and the real [ImprovMobileEngine.openOrCreate] factory.
+ */
 class ImprovViewModel(
-    val engine: ImprovMobileEngine = ImprovMobileEngine.openOrCreate(""),
-    initialModelId: String = DEFAULT_MODEL_ID,
+    private val modelStore: ModelStore,
+    private val engineFactory: (String) -> ImprovMobileEngine = { ImprovMobileEngine.openOrCreate(it) },
 ) : ViewModel() {
 
     companion object {
-        const val DEFAULT_MODEL_ID = "improv_sample_3d"
         const val KEY_ACTIVE_MODEL_ID = "active_model_id"
     }
 
     private val directViewportBuffer: ByteBuffer = ByteBuffer.allocateDirect(64 * 1024)
     private val directReader = DirectViewportReader(directViewportBuffer)
 
-    private val _uiState = MutableStateFlow(ImprovUiState(activeModelId = initialModelId))
+    // Null until the user opens or creates a workbook.  Every engine-touching
+    // method guards on this so a no-model library state cannot call the FFI.
+    private var engine: ImprovMobileEngine? = null
+
+    private val _uiState = MutableStateFlow(ImprovUiState())
     val uiState: StateFlow<ImprovUiState> = _uiState.asStateFlow()
 
+    private val _libraryState = MutableStateFlow(LibraryUiState())
+    val libraryState: StateFlow<LibraryUiState> = _libraryState.asStateFlow()
+
     init {
-        refreshFromEngine(status = "Loaded 3D Sample Model (Time × Product × Region)")
+        refreshLibrary()
     }
 
-    fun setActiveModelId(modelId: String) {
-        val normalized = modelId.trim().ifEmpty { DEFAULT_MODEL_ID }
-        _uiState.update { it.copy(activeModelId = normalized) }
+    // ---- Workbook library / lifecycle --------------------------------------
+
+    /** Re-reads the workbook directory into [libraryState]. */
+    fun refreshLibrary() {
+        _libraryState.update {
+            try {
+                it.copy(workbooks = modelStore.list(), errorMessage = null)
+            } catch (e: Exception) {
+                it.copy(errorMessage = e.message ?: "Could not list workbooks")
+            }
+        }
     }
+
+    /** True when a workbook is open and the spreadsheet surface should show. */
+    fun hasOpenModel(): Boolean = _uiState.value.activeModelId != null
+
+    /**
+     * Opens the workbook [id], switching the live engine to its `.db` store and
+     * seeding the UI state from the model.  Safe to call for the already-open id
+     * (it simply refreshes).
+     */
+    fun openModel(id: String) {
+        val normalized = id.trim()
+        if (normalized.isEmpty()) return
+        try {
+            closeEngine()
+            engine = engineFactory(modelStore.dbPathFor(normalized))
+            _uiState.value = ImprovUiState(activeModelId = normalized)
+            val name = _libraryState.value.workbooks.firstOrNull { it.id == normalized }?.displayName
+                ?: normalized
+            refreshFromEngine(selectedRow = 0, selectedCol = 0, status = "Opened '$name'")
+            syncSummaryToStore(normalized, name)
+        } catch (e: Exception) {
+            engine = null
+            _uiState.update { ImprovUiState() }
+            _libraryState.update { it.copy(errorMessage = "Could not open '$normalized': ${e.message}") }
+            refreshLibrary()
+        }
+    }
+
+    /**
+     * Creates a blank-starter workbook named [displayName] and opens it.  The
+     * engine's open_or_create auto-seeds the sample model into a new `.db`, so
+     * createBlankModel() is called immediately after to overwrite it with the
+     * Period x Department starter.
+     */
+    fun createBlankWorkbook(displayName: String) {
+        val name = displayName.trim().ifEmpty { "Untitled Workbook" }
+        try {
+            val id = modelStore.create(name)
+            closeEngine()
+            engine = engineFactory(modelStore.dbPathFor(id))
+            engine!!.createBlankModel()
+            _uiState.value = ImprovUiState(activeModelId = id)
+            refreshFromEngine(selectedRow = 0, selectedCol = 0, status = "Created '$name'")
+            syncSummaryToStore(id, name)
+            refreshLibrary()
+        } catch (e: Exception) {
+            engine = null
+            _libraryState.update { it.copy(errorMessage = "Could not create workbook: ${e.message}") }
+        }
+    }
+
+    /**
+     * Creates an example workbook named [displayName] and opens it.  The
+     * auto-seed on a fresh `.db` already IS the sample, so the engine opens
+     * directly onto it.
+     */
+    fun createSampleWorkbook(displayName: String) {
+        val name = displayName.trim().ifEmpty { "Sample Workbook" }
+        try {
+            val id = modelStore.create(name, summary = "Example model")
+            closeEngine()
+            engine = engineFactory(modelStore.dbPathFor(id))
+            // Force the canonical sample even if the db existed from a prior id reuse.
+            engine!!.loadSampleModel()
+            _uiState.value = ImprovUiState(activeModelId = id)
+            refreshFromEngine(selectedRow = 0, selectedCol = 0, status = "Created example '$name'")
+            syncSummaryToStore(id, name)
+            refreshLibrary()
+        } catch (e: Exception) {
+            engine = null
+            _libraryState.update { it.copy(errorMessage = "Could not create example: ${e.message}") }
+        }
+    }
+
+    /** Renames the given workbook's display name and refreshes the library. */
+    fun renameWorkbook(id: String, newName: String) {
+        try {
+            modelStore.rename(id, newName)
+            if (_uiState.value.activeModelId == id) {
+                _uiState.update { it.copy(activeViewName = newName.trim()) }
+            }
+            refreshLibrary()
+        } catch (e: Exception) {
+            _libraryState.update { it.copy(errorMessage = e.message ?: "Could not rename workbook") }
+        }
+    }
+
+    /** Deletes the given workbook; closes it first when it is the open one. */
+    fun deleteWorkbook(id: String) {
+        if (_uiState.value.activeModelId == id) {
+            closeModel()
+        }
+        modelStore.delete(id)
+        refreshLibrary()
+    }
+
+    /** Closes the open workbook and returns to the library. */
+    fun closeModel() {
+        closeEngine()
+        _uiState.value = ImprovUiState()
+        refreshLibrary()
+    }
+
+    private fun closeEngine() {
+        engine?.close()
+        engine = null
+    }
+
+    /** Writes the opened model's category x measure shape back to the sidecar. */
+    private fun syncSummaryToStore(id: String, displayName: String) {
+        val e = engine ?: return
+        try {
+            val cats = e.getCategories().size
+            val meas = e.getMeasures().size
+            modelStore.updateSummary(id, displayName, "$cats categories × $meas measures")
+        } catch (_: Exception) {
+            // A summary refresh is best-effort; a failure must not block opening.
+        }
+    }
+
+    /** Re-syncs the open model's summary, resolving its name from the sidecar. */
+    private fun syncOpenModelSummary() {
+        val id = _uiState.value.activeModelId ?: return
+        val name = modelStore.list().firstOrNull { it.id == id }?.displayName ?: id
+        syncSummaryToStore(id, name)
+    }
+
+    // ---- Model editing (guarded on an open engine) -------------------------
 
     fun refreshFromEngine(
         selectedRow: Int = _uiState.value.selectedRow,
         selectedCol: Int = _uiState.value.selectedCol,
         status: String? = null,
     ) {
+        val engine = engine ?: return
         val allCategories = engine.getCategories()
         val rowCats = allCategories
             .filter { it.orientation == AxisOrientation.ROW }
@@ -144,17 +310,25 @@ class ImprovViewModel(
             selectedCell?.numericValue ?: Double.NaN
         }
 
-        val suggestions = engine.autocompleteFormula(_uiState.value.formulaInput)
+        val current = _uiState.value
+        val suggestions = engine.autocompleteFormula(current.formulaInput)
+        // Analytics defaults to the selected cell's measure, else the previously
+        // chosen measure if it still exists, else the model's last measure.
         val targetAnalyticsMeasure = selectedCell?.measureName?.takeIf { it.isNotBlank() }
-            ?: _uiState.value.activeAnalyticsMeasure.takeIf { name ->
-                measures.any { it.name.equals(name, ignoreCase = true) }
+            ?: current.activeAnalyticsMeasure.takeIf { name ->
+                name.isNotBlank() && measures.any { it.name.equals(name, ignoreCase = true) }
             }
             ?: measures.lastOrNull()?.name
-            ?: "Margin"
-        val analyticsSummary = engine.getSliceAnalytics(targetAnalyticsMeasure)
+        val analyticsSummary = targetAnalyticsMeasure?.let { engine.getSliceAnalytics(it) }
 
-        _uiState.update { current ->
-            current.copy(
+        // The view name and formula hint derive from the model's real shape, not
+        // a demo literal, and only fill in while they are still empty.
+        val derivedViewName = current.activeViewName.ifBlank { deriveViewName(rowCats, colCats) }
+        val derivedFormulaInput = current.formulaInput.ifBlank { deriveFormulaHint(measures) }
+
+        _uiState.update {
+            it.copy(
+                activeViewName = derivedViewName,
                 rowCategories = rowCats,
                 columnCategories = colCats,
                 pageCategories = pageCats,
@@ -167,14 +341,33 @@ class ImprovViewModel(
                 selectedCellFormatted = selectedCell?.formatted.orEmpty(),
                 selectedCellEditBuffer = selectedCell?.formatted?.replace(",", "").orEmpty(),
                 selectedCellIsDerived = selectedCell?.isDerived ?: false,
+                formulaInput = derivedFormulaInput,
                 autocompleteSuggestions = suggestions,
                 directBufferBytesWritten = bytesWritten,
                 directBufferSelectedValue = directVal,
-                activeAnalyticsMeasure = analyticsSummary.measureName,
-                sliceAnalytics = analyticsSummary,
-                statusMessage = status ?: current.statusMessage,
+                activeAnalyticsMeasure = analyticsSummary?.measureName.orEmpty(),
+                sliceAnalytics = analyticsSummary ?: it.sliceAnalytics,
+                statusMessage = status ?: it.statusMessage,
             )
         }
+    }
+
+    /** "Time × Product" style name from the first row/column categories, or a neutral label. */
+    private fun deriveViewName(rowCats: List<CategoryTile>, colCats: List<CategoryTile>): String {
+        val rowName = rowCats.firstOrNull()?.name
+        val colName = colCats.firstOrNull()?.name
+        return when {
+            rowName != null && colName != null -> "$rowName × $colName"
+            rowName != null -> rowName
+            colName != null -> colName
+            else -> "Workbook"
+        }
+    }
+
+    /** A starter formula hint from the model's last measure, or empty for a bare model. */
+    private fun deriveFormulaHint(measures: List<MeasureSummary>): String {
+        val name = measures.lastOrNull()?.name ?: return ""
+        return "$name = "
     }
 
     private fun buildSemanticCoordinate(
@@ -260,6 +453,7 @@ class ImprovViewModel(
         targetAxis: AxisOrientation,
         newIndex: Int = 0,
     ) {
+        val engine = engine ?: return
         engine.pivotCategory(categoryId, targetAxis, newIndex.coerceAtLeast(0).toUInt())
         val catName = (_uiState.value.rowCategories + _uiState.value.columnCategories + _uiState.value.pageCategories)
             .firstOrNull { it.id == categoryId || it.name.equals(categoryId, ignoreCase = true) }
@@ -277,11 +471,13 @@ class ImprovViewModel(
     }
 
     fun selectPageItem(categoryId: String, itemId: String) {
+        val engine = engine ?: return
         engine.selectPageItem(categoryId, itemId)
         refreshFromEngine(status = "Updated page slice filter")
     }
 
     fun addCategory(name: String, itemsCsv: String, orientation: AxisOrientation) {
+        val engine = engine ?: return
         val trimmed = name.trim()
         if (trimmed.isEmpty()) {
             _uiState.update { it.copy(formulaError = "Category name is required") }
@@ -295,13 +491,14 @@ class ImprovViewModel(
             val tile = engine.addCategory(trimmed, items, orientation)
             _uiState.update { it.copy(formulaError = null) }
             refreshFromEngine(status = "Added category '${tile.name}' (${tile.items.size} items) on ${orientation.name}")
+            syncOpenModelSummary()
         } catch (e: Exception) {
             _uiState.update { it.copy(formulaError = e.message ?: "Failed to add category") }
         }
     }
 
     fun onFormulaInputChanged(text: String) {
-        val suggestions = engine.autocompleteFormula(text)
+        val suggestions = engine?.autocompleteFormula(text) ?: emptyList()
         _uiState.update {
             it.copy(
                 formulaInput = text,
@@ -329,6 +526,7 @@ class ImprovViewModel(
     }
 
     fun submitFormula(expression: String = _uiState.value.formulaInput) {
+        val engine = engine ?: return
         try {
             val entry = engine.upsertFormula(expression)
             _uiState.update {
@@ -338,6 +536,7 @@ class ImprovViewModel(
                 )
             }
             refreshFromEngine(status = "Evaluated formula: ${entry.expression} (${entry.naturalLanguage})")
+            syncOpenModelSummary()
         } catch (e: Exception) {
             _uiState.update {
                 it.copy(
@@ -353,6 +552,7 @@ class ImprovViewModel(
     }
 
     fun commitSelectedCellEdit() {
+        val engine = engine ?: return
         val state = _uiState.value
         if (state.selectedCellIsDerived) {
             _uiState.update {
@@ -377,64 +577,37 @@ class ImprovViewModel(
         }
     }
 
-    fun selectViewPreset(presetName: String) {
-        _uiState.update { it.copy(activeViewName = presetName) }
-        when {
-            presetName.contains("Product × Time", ignoreCase = true) -> {
-                engine.pivotCategory("Product", AxisOrientation.ROW, 0u)
-                engine.pivotCategory("Time", AxisOrientation.COLUMN, 0u)
-                engine.pivotCategory("Region", AxisOrientation.PAGE, 0u)
-            }
-            presetName.contains("Region × Time", ignoreCase = true) -> {
-                engine.pivotCategory("Region", AxisOrientation.ROW, 0u)
-                engine.pivotCategory("Time", AxisOrientation.COLUMN, 0u)
-                engine.pivotCategory("Product", AxisOrientation.PAGE, 0u)
-            }
-            else -> {
-                engine.pivotCategory("Time", AxisOrientation.ROW, 0u)
-                engine.pivotCategory("Product", AxisOrientation.COLUMN, 0u)
-                engine.pivotCategory("Region", AxisOrientation.PAGE, 0u)
-            }
-        }
-        refreshFromEngine(status = "Switched view to '$presetName'")
-    }
+    /**
+     * Rearranges the current categories onto a chosen pivot shape, derived from
+     * the model's own categories (never from hardcoded names).  [rowCategoryId]
+     * goes to the row axis and [columnCategoryId] to the column axis; every other
+     * category falls to the page axis.  When either id is blank the first two
+     * categories are used, so a caller can request a plain "swap rows/cols".
+     */
+    fun applyPivotLayout(rowCategoryId: String, columnCategoryId: String) {
+        val engine = engine ?: return
+        val all = engine.getCategories()
+        if (all.isEmpty()) return
+        val rowId = rowCategoryId.ifBlank { all.getOrNull(0)?.id.orEmpty() }
+        val colId = columnCategoryId.ifBlank { all.getOrNull(1)?.id.orEmpty() }
+        val rowCat = all.firstOrNull { it.id == rowId }
+        val colCat = all.firstOrNull { it.id == colId && it.id != rowId }
 
-    fun resetSampleModel() {
-        try {
-            engine.loadSampleModel()
-            _uiState.update {
-                it.copy(
-                    activeViewName = "3D Financial Cube (Default)",
-                    formulaError = null,
-                )
-            }
-            refreshFromEngine(selectedRow = 0, selectedCol = 0, status = "Reset 3D Sample Model (Time × Product × Region)")
-        } catch (e: Exception) {
-            _uiState.update { it.copy(statusMessage = "Reset failed: ${e.message}") }
-        }
-    }
+        rowCat?.let { engine.pivotCategory(it.id, AxisOrientation.ROW, 0u) }
+        colCat?.let { engine.pivotCategory(it.id, AxisOrientation.COLUMN, 0u) }
+        all.filter { it.id != rowCat?.id && it.id != colCat?.id }
+            .forEach { engine.pivotCategory(it.id, AxisOrientation.PAGE, 0u) }
 
-    fun createBlankWorkbook() {
-        try {
-            engine.createBlankModel()
-            _uiState.update {
-                it.copy(
-                    activeViewName = "Blank Workbook (Period × Department)",
-                    formulaInput = "Forecast = Budget * 1.1",
-                    formulaError = null,
-                )
-            }
-            refreshFromEngine(
-                selectedRow = 0,
-                selectedCol = 0,
-                status = "Created blank analytical workbook (Period × Department)",
-            )
-        } catch (e: Exception) {
-            _uiState.update { it.copy(statusMessage = "New workbook failed: ${e.message}") }
-        }
+        val name = deriveViewName(
+            listOfNotNull(rowCat),
+            listOfNotNull(colCat),
+        )
+        _uiState.update { it.copy(activeViewName = name) }
+        refreshFromEngine(status = "Switched layout to '$name'")
     }
 
     fun selectAnalyticsMeasure(measureName: String) {
+        val engine = engine ?: return
         val summary = engine.getSliceAnalytics(measureName)
         _uiState.update {
             it.copy(
@@ -446,6 +619,7 @@ class ImprovViewModel(
     }
 
     fun addCategoryItem(categoryIdOrName: String, itemName: String) {
+        val engine = engine ?: return
         val trimmed = itemName.trim()
         if (trimmed.isEmpty()) {
             _uiState.update { it.copy(statusMessage = "Enter a non-empty item name") }
@@ -462,6 +636,7 @@ class ImprovViewModel(
     }
 
     fun addInputMeasure(name: String, defaultValueText: String = "0.0") {
+        val engine = engine ?: return
         val trimmed = name.trim()
         if (trimmed.isEmpty()) {
             _uiState.update { it.copy(statusMessage = "Measure name is required") }
@@ -471,15 +646,18 @@ class ImprovViewModel(
         try {
             val summary = engine.addInputMeasure(trimmed, defaultVal)
             refreshFromEngine(status = "Added input measure '${summary.name}' (default = $defaultVal)")
+            syncOpenModelSummary()
         } catch (e: Exception) {
             _uiState.update { it.copy(statusMessage = "Add measure error: ${e.message}") }
         }
     }
 
     fun deleteMeasure(measureIdOrName: String) {
+        val engine = engine ?: return
         try {
             engine.deleteMeasure(measureIdOrName)
             refreshFromEngine(selectedRow = 0, selectedCol = 0, status = "Deleted measure '$measureIdOrName'")
+            syncOpenModelSummary()
         } catch (e: Exception) {
             _uiState.update { it.copy(statusMessage = "Delete measure error: ${e.message}") }
         }
@@ -490,6 +668,7 @@ class ImprovViewModel(
         multiplier: Double,
         scenarioLabel: String,
     ) {
+        val engine = engine ?: return
         try {
             val updatedCells = engine.applyWhatIfMultiplier(measureName, multiplier)
             refreshFromEngine(
@@ -505,6 +684,7 @@ class ImprovViewModel(
     }
 
     fun exportMeasureToCsvBuffer(measureName: String = _uiState.value.activeAnalyticsMeasure) {
+        val engine = engine ?: return
         try {
             val csvText = engine.exportMeasureCsvText(measureName)
             _uiState.update {
@@ -519,14 +699,21 @@ class ImprovViewModel(
     }
 
     fun importCsvFromBuffer(measureNameOverride: String = "") {
+        val engine = engine ?: return
         try {
             val importedCount = engine.importCsvText(_uiState.value.csvImportExportBuffer, measureNameOverride)
             refreshFromEngine(
                 status = "Imported $importedCount cells from CSV into multidimensional cube",
             )
+            syncOpenModelSummary()
         } catch (e: Exception) {
             _uiState.update { it.copy(statusMessage = "CSV import error: ${e.message}") }
         }
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        closeEngine()
     }
 }
 

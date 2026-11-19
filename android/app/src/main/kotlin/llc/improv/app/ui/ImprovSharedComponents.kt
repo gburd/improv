@@ -474,7 +474,7 @@ fun FormulaEditorSection(
                     },
                 label = {
                     Text(
-                        "Natural Language / Symbolic Formula (e.g. Margin equals Revenue minus COGS)",
+                        "Natural Language / Symbolic Formula (e.g. NewMeasure equals A minus B)",
                         fontSize = 11.sp,
                     )
                 },
@@ -748,11 +748,11 @@ fun AnalyticalStudioSection(
 ) {
     var targetCatForItem by remember(uiState.rowCategories, uiState.columnCategories, uiState.pageCategories) {
         val firstCat = (uiState.rowCategories + uiState.columnCategories + uiState.pageCategories).firstOrNull()?.name
-        mutableStateOf(firstCat ?: "Time")
+        mutableStateOf(firstCat ?: "")
     }
-    var newItemName by remember { mutableStateOf("Q5") }
-    var newMeasureName by remember { mutableStateOf("Discount") }
-    var newMeasureDefault by remember { mutableStateOf("25.0") }
+    var newItemName by remember { mutableStateOf("") }
+    var newMeasureName by remember { mutableStateOf("") }
+    var newMeasureDefault by remember { mutableStateOf("0.0") }
 
     val stats = uiState.sliceAnalytics
     val fmt = { v: Double -> String.format(java.util.Locale.US, "%,.2f", v) }
@@ -884,37 +884,30 @@ fun AnalyticalStudioSection(
             }
         }
 
-        // 2. What-If Scenario & Sensitivity Simulator
-        Text(
-            text = "What-If Scenario Shocks",
-            fontSize = 12.sp,
-            fontWeight = FontWeight.Bold,
-            color = Color(0xFF0F172A),
-        )
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
-            OutlinedButton(
-                onClick = { viewModel.applyWhatIfMultiplier("Quantity", 1.15, "+15% Demand Surge") },
-                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
-                modifier = Modifier.weight(1f).pointerHoverIcon(PointerIcon.Hand),
+        // 2. What-If Scenario & Sensitivity Simulator.  The buttons derive from
+        // the model's own input measures, so they work for any workbook rather
+        // than only the sample's Quantity/Price/UnitCost.
+        val inputMeasures = uiState.measures.filter { !it.isDerived }
+        if (inputMeasures.isNotEmpty()) {
+            Text(
+                text = "What-If Scenario Shocks (+10%)",
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Bold,
+                color = Color(0xFF0F172A),
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
             ) {
-                Text("+15% Qty", fontSize = 10.sp)
-            }
-            OutlinedButton(
-                onClick = { viewModel.applyWhatIfMultiplier("Price", 1.10, "+10% Price Lift") },
-                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
-                modifier = Modifier.weight(1f).pointerHoverIcon(PointerIcon.Hand),
-            ) {
-                Text("+10% Price", fontSize = 10.sp)
-            }
-            OutlinedButton(
-                onClick = { viewModel.applyWhatIfMultiplier("UnitCost", 1.12, "+12% Cost Shock") },
-                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
-                modifier = Modifier.weight(1f).pointerHoverIcon(PointerIcon.Hand),
-            ) {
-                Text("+12% Cost", fontSize = 10.sp)
+                inputMeasures.take(3).forEach { m ->
+                    OutlinedButton(
+                        onClick = { viewModel.applyWhatIfMultiplier(m.name, 1.10, "+10% ${m.name}") },
+                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
+                        modifier = Modifier.weight(1f).pointerHoverIcon(PointerIcon.Hand),
+                    ) {
+                        Text("+10% ${m.name}", fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                }
             }
         }
 

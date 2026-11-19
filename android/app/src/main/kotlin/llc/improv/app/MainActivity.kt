@@ -1,6 +1,5 @@
 package llc.improv.app
 
-import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -16,21 +15,19 @@ import androidx.lifecycle.ViewModelProvider
 import llc.improv.app.ui.ImprovAdaptiveApp
 import llc.improv.app.ui.ImprovViewModel
 import llc.improv.app.ui.theme.ImprovTheme
-import uniffi.improv_android_ffi.ImprovMobileEngine
+import llc.improv.app.workbook.ModelStore
 import java.io.File
 
 class MainActivity : ComponentActivity() {
 
+    // The ViewModel owns model lifecycle; the Activity only supplies the
+    // workbook directory.  No single engine is pinned for the app's life.
     private val improvViewModel: ImprovViewModel by viewModels {
-        val modelId = resolveModelIdFromIntent(intent)
-        val dbPath = File(filesDir, "$modelId.db").absolutePath
+        val store = ModelStore(File(filesDir, "workbooks"))
         object : ViewModelProvider.Factory {
             @Suppress("UNCHECKED_CAST")
             override fun <T : ViewModel> create(modelClass: Class<T>): T {
-                return ImprovViewModel(
-                    engine = ImprovMobileEngine.openOrCreate(dbPath),
-                    initialModelId = modelId,
-                ) as T
+                return ImprovViewModel(modelStore = store) as T
             }
         }
     }
@@ -50,16 +47,5 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
-    }
-
-    override fun onNewIntent(intent: Intent) {
-        super.onNewIntent(intent)
-        setIntent(intent)
-    }
-
-    private fun resolveModelIdFromIntent(intent: Intent?): String {
-        val fromIntent = intent?.extras?.getString(ImprovViewModel.KEY_ACTIVE_MODEL_ID)
-        if (!fromIntent.isNullOrBlank()) return fromIntent
-        return ImprovViewModel.DEFAULT_MODEL_ID
     }
 }

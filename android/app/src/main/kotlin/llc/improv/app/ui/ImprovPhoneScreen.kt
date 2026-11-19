@@ -61,7 +61,7 @@ fun ImprovPhoneScreen(
 ) {
     var activeSheet by remember { mutableStateOf(PhoneBottomSheetKind.NONE) }
     var newCategoryName by remember { mutableStateOf("") }
-    var newCategoryItems by remember { mutableStateOf("North, South") }
+    var newCategoryItems by remember { mutableStateOf("") }
 
     Scaffold(
         modifier = modifier
@@ -72,16 +72,17 @@ fun ImprovPhoneScreen(
                 title = {
                     Column {
                         Text(
-                            text = "Improv 3D",
+                            text = uiState.activeViewName.ifBlank { "Workbook" },
                             fontSize = 16.sp,
                             fontWeight = FontWeight.Bold,
                             color = Color.White,
                         )
                         Text(
-                            text = uiState.activeViewName,
+                            text = uiState.statusMessage.ifBlank { "Ready" },
                             fontSize = 11.sp,
                             color = Color(0xFF93C5FD),
                             fontFamily = FontFamily.Monospace,
+                            maxLines = 1,
                         )
                     }
                 },
@@ -152,10 +153,12 @@ fun ImprovPhoneScreen(
                     Text("NL Formulas (${uiState.formulas.size})", fontSize = 12.sp)
                 }
                 OutlinedButton(
-                    onClick = { viewModel.resetSampleModel() },
-                    modifier = Modifier.pointerHoverIcon(PointerIcon.Hand),
+                    onClick = { viewModel.closeModel() },
+                    modifier = Modifier
+                        .pointerHoverIcon(PointerIcon.Hand)
+                        .semantics { contentDescription = "Return to workbook library" },
                 ) {
-                    Text("Reset", color = Color.White, fontSize = 11.sp)
+                    Text("Library", color = Color.White, fontSize = 11.sp)
                 }
             }
         },
@@ -228,7 +231,7 @@ fun ImprovPhoneScreen(
                         fontWeight = FontWeight.Bold,
                     )
                     Text(
-                        text = "Tap a tile or its R / C / P badge to rearrange the 3D cube axes.",
+                        text = "Tap a tile or its R / C / P badge to rearrange the pivot axes.",
                         fontSize = 12.sp,
                         color = Color(0xFF475569),
                     )

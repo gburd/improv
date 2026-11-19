@@ -17,6 +17,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -82,12 +83,18 @@ fun ImprovFoldableTabletopScreen(
                         )
                     }
                     Text(
-                        text = uiState.activeViewName,
+                        text = uiState.activeViewName.ifBlank { "Workbook" },
                         color = Color(0xFFC4B5FD),
                         fontSize = 11.sp,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
+                }
+                TextButton(
+                    onClick = { viewModel.closeModel() },
+                    modifier = Modifier.semantics { contentDescription = "Return to workbook library" },
+                ) {
+                    Text("Library", color = Color(0xFFFDE68A), fontSize = 11.sp)
                 }
             }
 
@@ -124,7 +131,7 @@ fun ImprovFoldableTabletopScreen(
             contentAlignment = Alignment.Center,
         ) {
             Text(
-                text = "═══ FOLDABLE HINGE · TOP: 3D CUBE VIEWPORT  |  BOTTOM: TACTILE AI & PIVOT CONTROL DECK ═══",
+                text = "═══ FOLDABLE HINGE · TOP: GRID VIEWPORT  |  BOTTOM: PIVOT & FORMULA CONTROL DECK ═══",
                 color = Color(0xFFFDE68A),
                 fontSize = 9.sp,
                 fontWeight = FontWeight.Bold,

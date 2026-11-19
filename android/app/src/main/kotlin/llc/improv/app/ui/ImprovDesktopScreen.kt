@@ -74,7 +74,7 @@ fun ImprovDesktopScreen(
     var pageTrayBounds by remember { mutableStateOf(Rect.Zero) }
 
     var newCategoryName by remember { mutableStateOf("") }
-    var newCategoryItems by remember { mutableStateOf("Online, Retail") }
+    var newCategoryItems by remember { mutableStateOf("") }
 
     val handleDragStart: (CategoryTile, Offset) -> Unit = { tile, startRoot ->
         draggedTile = tile
@@ -137,21 +137,22 @@ fun ImprovDesktopScreen(
                     fontSize = 12.sp,
                     fontWeight = FontWeight.SemiBold,
                 )
-                listOf(
-                    "Time × Product",
-                    "Product × Time",
-                    "Region × Time",
-                ).forEach { preset ->
+                // Pivot presets derived from the model's own categories: each
+                // swaps a category to the row axis against the next category.
+                val pivotCats = uiState.rowCategories + uiState.columnCategories + uiState.pageCategories
+                pivotCats.take(3).forEach { rowCat ->
+                    val colCat = pivotCats.firstOrNull { it.id != rowCat.id }
+                    val label = if (colCat != null) "${rowCat.name} × ${colCat.name}" else rowCat.name
                     Box(
                         modifier = Modifier
                             .pointerHoverIcon(PointerIcon.Hand)
-                            .semantics { contentDescription = "Switch to view preset $preset" }
+                            .semantics { contentDescription = "Switch to pivot layout $label" }
                             .background(Color(0xFF334155), RoundedCornerShape(3.dp))
-                            .clickable { viewModel.selectViewPreset(preset) }
+                            .clickable { viewModel.applyPivotLayout(rowCat.id, colCat?.id.orEmpty()) }
                             .padding(horizontal = 8.dp, vertical = 3.dp),
                     ) {
                         Text(
-                            text = preset,
+                            text = label,
                             color = Color(0xFFE2E8F0),
                             fontSize = 11.sp,
                             fontFamily = FontFamily.Monospace,
@@ -171,24 +172,14 @@ fun ImprovDesktopScreen(
                     fontFamily = FontFamily.Monospace,
                 )
                 OutlinedButton(
-                    onClick = { viewModel.createBlankWorkbook() },
-                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 3.dp),
-                    modifier = Modifier
-                        .height(28.dp)
-                        .pointerHoverIcon(PointerIcon.Hand)
-                        .semantics { contentDescription = "Create Blank Workbook" },
-                ) {
-                    Text("Blank Workbook", color = Color(0xFFFDE68A), fontSize = 11.sp)
-                }
-                OutlinedButton(
-                    onClick = { viewModel.resetSampleModel() },
+                    onClick = { viewModel.closeModel() },
                     contentPadding = PaddingValues(horizontal = 10.dp, vertical = 3.dp),
                     modifier = Modifier
                         .height(28.dp)
                         .pointerHoverIcon(PointerIcon.Hand)
-                        .semantics { contentDescription = "Reset 3D Sample Model" },
+                        .semantics { contentDescription = "Return to workbook library" },
                 ) {
-                    Text("Reset 3D Model", color = Color.White, fontSize = 11.sp)
+                    Text("Library", color = Color(0xFFFDE68A), fontSize = 11.sp)
                 }
                 if (onToggleLayoutOverride != null) {
                     OutlinedButton(

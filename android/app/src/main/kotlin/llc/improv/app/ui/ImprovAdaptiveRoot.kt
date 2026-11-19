@@ -8,20 +8,26 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.window.core.layout.WindowSizeClass
 import androidx.window.core.layout.WindowWidthSizeClass
 
 /**
- * Adaptive root composable using `androidx.compose.material3.adaptive` and `WindowSizeClass`:
- * - When `WindowWidthSizeClass.COMPACT` is active (Pixel Phone portrait), renders [ImprovPhoneScreen].
- * - When `WindowWidthSizeClass.MEDIUM` or `WindowWidthSizeClass.EXPANDED` is active
- *   (HP Googlebook 14 or Pixel in Desktop Mode), renders [ImprovDesktopScreen].
+ * Adaptive root.  First branch: workbook open or not.  With no open workbook
+ * the app shows the [WorkbookLibraryScreen] (so a first launch never drops the
+ * user into a model).  With a workbook open, it routes by `WindowSizeClass`:
+ * - `COMPACT` width (phone portrait) -> [ImprovPhoneScreen], touch-first, the
+ *   grid as the hero with pivot/formulas/analytics in bottom sheets.
+ * - `MEDIUM`/`EXPANDED` width (tablet, Chromebook/Googlebook, desktop mode) ->
+ *   [ImprovDesktopScreen], a multi-pane left-rail + grid + right-inspector
+ *   layout with draggable tiles, keyboard and hover.
+ * - tabletop posture -> [ImprovFoldableTabletopScreen].
+ *
+ * Both model layouts and the library share one [ImprovViewModel] and model.
  */
 @Composable
 fun ImprovAdaptiveApp(
+    viewModel: ImprovViewModel,
     modifier: Modifier = Modifier,
-    viewModel: ImprovViewModel = viewModel { ImprovViewModel() },
     windowSizeClassOverride: WindowSizeClass? = null,
 ) {
     val adaptiveInfo = currentWindowAdaptiveInfo()
@@ -32,7 +38,18 @@ fun ImprovAdaptiveApp(
     val showCompact = manualForceCompact ?: isNaturalCompact
 
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val libraryState by viewModel.libraryState.collectAsStateWithLifecycle()
     val isTabletop = adaptiveInfo.windowPosture.isTabletop
+
+    if (uiState.activeModelId == null) {
+        WorkbookLibraryScreen(
+            libraryState = libraryState,
+            viewModel = viewModel,
+            compact = showCompact && !isTabletop,
+            modifier = modifier,
+        )
+        return
+    }
 
     if (isTabletop) {
         ImprovFoldableTabletopScreen(
