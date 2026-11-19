@@ -7,6 +7,17 @@ this project follows [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **The Android app is now a generic multidimensional-workbook app.** It
+  opens on a workbook library listing the models stored on the device, with
+  create (blank `Period x Department` starter or the `Time x Product x
+  Region` example), open, rename, and delete. The ViewModel opens and
+  switches the engine between workbook `.db` stores at runtime over an
+  Android-free, unit-tested `ModelStore`, so no single engine is pinned for
+  the app's life, and nothing in the UI is tied to the sample model: the
+  selected coordinate, formula hint, analytics measure, pivot presets, and
+  what-if buttons all derive from the open model's own categories and
+  measures. The phone keeps the grid as the hero with bottom sheets; the
+  tablet/laptop keeps the multi-pane trays, grid, and inspector.
 - **A Nix `android` dev shell** (`nix develop .#android`) provides the
   Android SDK (platform 35), NDK r27c, `cargo-ndk`, and the Rust Android
   targets, so the APK builds without a hand-installed SDK.

@@ -6,12 +6,18 @@ Quantrix-style multidimensional spreadsheet with incremental recalculation on
 differential dataflow. The Android app drives the same Rust engine the desktop
 builds use, through the `improv_android_ffi` UniFFI crate.
 
-This is a **first cut**: the engine plus an adaptive spreadsheet UI. It targets
-Android phones, foldables and tablets, and ChromeOS / Googlebook devices that
-run Android apps, on current and last-generation Android.
+This is a **generic multidimensional-spreadsheet app**: a workbook library
+above the engine, plus an adaptive spreadsheet UI that reshapes to the device.
+It targets Android phones, foldables and tablets, and ChromeOS / Googlebook
+devices that run Android apps, on current and last-generation Android.
 
 ## What is in this cut
 
+- **Workbook library**: the app opens on a library of the workbooks stored on
+  the device (newest first), each shown with its name and a category x measure
+  summary. Create a new workbook (a blank `Period x Department` starter, or the
+  `Time x Product x Region` example model), open, rename, or delete them. First
+  launch lands on an empty library, not on a model.
 - **Shared Rust multidimensional engine** via `improv_android_ffi`:
   - Wraps `improv_core_model`, `improv_engine`, `improv_nl_formula`,
     `improv_store` (Mentat / SQLite), `improv_storage_csv`, and `improv_client`
@@ -19,18 +25,24 @@ run Android apps, on current and last-generation Android.
   - Native builds for `arm64-v8a` and `x86_64`.
   - A direct `ByteBuffer` viewport transfer (`16 B` header + `24 B` cell
     stride) read with zero per-cell allocation.
+  - The ViewModel opens and switches the engine between workbook `.db` stores at
+    runtime over an Android-free `ModelStore`; no single engine is pinned for
+    the app's life.
 - **Adaptive Material 3 Compose UI** that reshapes by `WindowSizeClass`:
-  - **Phone (compact width)**: a scrollable 2D slice of the cube with
-    collapsible bottom sheets for category pivoting, formulas, and analytics.
-  - **Desktop / Chromebook (medium or expanded width)**: a multi-pane layout
-    with drag-and-drop category tile trays, a model inspector, and a persistent
+  - **Phone (compact width)**: the grid is the hero, a scrollable 2D slice of
+    the model, with collapsible bottom sheets for category pivoting, formulas,
+    and analytics, and a Library action to switch workbooks. Touch only.
+  - **Tablet / laptop (medium or expanded width)**: a multi-pane layout with
+    drag-and-drop category tile trays, a model inspector, and a persistent
     formula pane, with hover cursors and arrow/Tab cell navigation.
   - **Foldable tabletop posture**: the grid on the top (angled) half and the
     pivot / studio controls on the bottom (flat) half.
-- **Spreadsheet features**: category pivoting (Row / Column / Page axes), page
-  slicing, input and derived measures, natural-language and symbolic formula
-  editing with autocomplete, slice analytics (sum / mean / median / min / max /
-  stddev with distribution bars), what-if multipliers, and CSV import/export.
+- **Spreadsheet features**: category pivoting (Row / Column / Page axes) with
+  presets derived from the model's own categories, page slicing, input and
+  derived measures, natural-language and symbolic formula editing with
+  autocomplete, slice analytics (sum / mean / median / min / max / stddev with
+  distribution bars), what-if multipliers over the model's input measures, and
+  CSV import/export.
 
 ## Not in this cut
 

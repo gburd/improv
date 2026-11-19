@@ -8,11 +8,13 @@ formulas), so pivoting axes never breaks a formula.
 
 ---
 
-## Part 1: Learning the Software with the 3D Demo Data
+## Part 1: Learning the Software with the Example Model
 
-When you launch Improv for the first time, it automatically loads the **3D
-Financial Cube** (`Time × Product × Region`) persisted in your local Mentat
-`.db` store.
+When you launch Improv, it opens on the **workbook library**. Tap **New**,
+name the workbook, choose **Example model**, and tap **Create** to load the
+**3D Financial Cube** (`Time × Product × Region`) persisted in a local Mentat
+`.db` store. From the library you can later open, rename, or delete any
+workbook; a blank starter is the other create option (see Part 2).
 
 ### 1. Understand the 3D Cube Layout
 - **Categories & Items**:
@@ -34,7 +36,7 @@ Financial Cube** (`Time × Product × Region`) persisted in your local Mentat
 ### 3. Pivot Categories to Slice & Dice
 - **On Tablet / Chromebook / Desktop Mode**:
   - Drag any Category Tile (`Time`, `Product`, `Region`) between the **ROW TRAY**, **COLUMN TRAY**, and **PAGE TRAY**, or click its **`R` / `C` / `P`** quick-switch pill.
-  - Use the top menu bar view presets (**`Time × Product`**, **`Product × Time`**, **`Region × Time`**) to snap between common executive views.
+  - Use the top menu bar pivot presets (labelled from the model's own categories, e.g. **`Time × Product`**) to snap between common layouts.
 - **On Phone (Portrait)**:
   - Tap **Pivot** in the top bar (or **Pivot Categories** at the bottom) to open the pivot sheet and rearrange axes.
 - **Page Slicing**:
@@ -46,7 +48,7 @@ Financial Cube** (`Time × Product × Region`) persisted in your local Mentat
    - `GrossMarginPct equals (Margin divided by Revenue) times 100`
    - `NetProfit = Margin - 5000`
 3. Tap **Evaluate** to compile and compute the new measure across every dimension.
-4. Open **Analytics** (Phone) or scroll the **Model Inspector** (Desktop) and tap **`+15% Qty`**, **`+10% Price`**, or **`+12% Cost`** under **What-If Scenario Shocks** to see the entire P&L react. Tap **Reset 3D Model** (or **Reset** on Phone) anytime to restore the original demo data.
+4. Open **Analytics** (Phone) or scroll the **Model Inspector** (Desktop) and tap a **What-If Scenario Shock** button (one per input measure, e.g. **`+10% Price`**) to see the entire P&L react. To return to the library, tap **Library**.
 
 ---
 
@@ -55,7 +57,7 @@ Financial Cube** (`Time × Product × Region`) persisted in your local Mentat
 When you are ready to build your own analytical model from scratch:
 
 ### 1. Create a Blank Workbook
-- **Desktop / Tablet**: Click **`Blank Workbook`** in the top menu bar.
+- From the **workbook library**, tap **New**, name it, choose **Blank starter**, and tap **Create**.
 - This initializes a clean starter model (`Period × Department` with `P1`, `P2`, `Core`, `Growth`, and an editable `Budget` input measure initialized to `0.0`).
 
 ### 2. Design Your Dimensions (Categories & Items)
@@ -99,7 +101,7 @@ Once your dataset is loaded, build cross-dimensional KPIs in the **Formula Pane*
 
 ### 3. Analyze Slices in the Statistical Studio
 - Under **SLICE ANALYTICS**, tap any measure chip (`Margin`, `Revenue`, `TargetQuota`, etc.) to inspect live **Sum**, **Mean**, **Median**, **Min**, **Max**, **StdDev**, cell count (`n`), and per-row horizontal distribution bars.
-- Use the **What-If Scenario Shocks** (`+15% Qty`, `+10% Price`, `+12% Cost`) to stress-test how the whole model reacts, then **Reset 3D Model** to restore the demo data.
+- Use the **What-If Scenario Shocks** (one `+10%` button per input measure) to stress-test how the whole model reacts. To switch workbooks, tap **Library**.
 
 > On-device AI formula synthesis, stylus handwriting, camera / OCR table
 > capture, and sensor-telemetry ingestion are not part of this first cut.
