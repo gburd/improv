@@ -517,8 +517,13 @@ fn status_row(model: &str) -> Res<StatusRow> {
 
 unsafe extern "C-unwind" {
     /// Postgres's SIGTERM handler (`tcop/postgres.c`). pgrx binds it as a
-    /// guarded Rust fn, which is no signal handler: the C symbol.
+    /// guarded Rust fn, which is no signal handler: the C symbol. Its
+    /// signature follows `SIGNAL_ARGS`, which PG 19 widened from `(int)` to
+    /// `(int, const pg_signal_info *)`.
+    #[cfg(any(feature = "pg15", feature = "pg16", feature = "pg17", feature = "pg18"))]
     fn die(signal: std::ffi::c_int);
+    #[cfg(not(any(feature = "pg15", feature = "pg16", feature = "pg17", feature = "pg18")))]
+    fn die(signal: std::ffi::c_int, siginfo: *const pg_sys::pg_signal_info);
 }
 
 /// The sync worker's entry point.

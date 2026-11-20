@@ -262,6 +262,50 @@ fn note_raw(rel: pg_sys::Oid) {
     });
 }
 
+/// Whether the planned statement targets any result relation.  PG 15 to 18
+/// keep the targets as a `List*` of range-table indexes (`resultRelations`);
+/// PG 19 moved them to a `Bitmapset*` of the same indexes
+/// (`resultRelationRelids`).
+///
+/// # Safety
+/// `ps` must be a valid, non-null `PlannedStmt` pointer.
+#[cfg(any(feature = "pg15", feature = "pg16", feature = "pg17", feature = "pg18"))]
+unsafe fn has_result_relations(ps: *mut pg_sys::PlannedStmt) -> bool {
+    !(*ps).resultRelations.is_null()
+}
+
+#[cfg(not(any(feature = "pg15", feature = "pg16", feature = "pg17", feature = "pg18")))]
+unsafe fn has_result_relations(ps: *mut pg_sys::PlannedStmt) -> bool {
+    // bms_is_empty is a static inline pgrx does not bind on 0.19; a set with
+    // no first member (bms_next_member from -1 returns -1) is empty.
+    pg_sys::bms_next_member((*ps).resultRelationRelids, -1) >= 0
+}
+
+/// The 1-based range-table indexes of the statement's result relations.
+///
+/// # Safety
+/// `ps` must be a valid, non-null `PlannedStmt` pointer.
+#[cfg(any(feature = "pg15", feature = "pg16", feature = "pg17", feature = "pg18"))]
+unsafe fn result_rt_indexes(ps: *mut pg_sys::PlannedStmt) -> Vec<i32> {
+    PgList::<()>::from_pg((*ps).resultRelations)
+        .iter_int()
+        .collect()
+}
+
+#[cfg(not(any(feature = "pg15", feature = "pg16", feature = "pg17", feature = "pg18")))]
+unsafe fn result_rt_indexes(ps: *mut pg_sys::PlannedStmt) -> Vec<i32> {
+    // Walk the bitmapset: bms_next_member returns the next member after its
+    // argument (-1 to start), and -1 again when none remain.
+    let bms = (*ps).resultRelationRelids;
+    let mut out = Vec::new();
+    let mut i = pg_sys::bms_next_member(bms, -1);
+    while i >= 0 {
+        out.push(i);
+        i = pg_sys::bms_next_member(bms, i);
+    }
+    out
+}
+
 #[pg_guard]
 unsafe extern "C-unwind" fn executor_finish(qd: *mut pg_sys::QueryDesc) {
     push_frame();
@@ -271,7 +315,7 @@ unsafe extern "C-unwind" fn executor_finish(qd: *mut pg_sys::QueryDesc) {
     }
     let frame = pop_frame();
     let ps = (*qd).plannedstmt;
-    if ps.is_null() || (*ps).resultRelations.is_null() {
+    if ps.is_null() || !has_result_relations(ps) {
         return;
     }
     // A plain write that changed no row changes no result. (A writable
@@ -283,7 +327,7 @@ unsafe extern "C-unwind" fn executor_finish(qd: *mut pg_sys::QueryDesc) {
     // Every ModifyTable's result relations (writable CTEs included), as
     // 1-based range-table indexes; over-noting is harmless.
     let rtable = PgList::<pg_sys::RangeTblEntry>::from_pg((*ps).rtable);
-    for i in PgList::<()>::from_pg((*ps).resultRelations).iter_int() {
+    for i in result_rt_indexes(ps) {
         if let Some(rte) = usize::try_from(i - 1).ok().and_then(|i| rtable.get_ptr(i)) {
             note((*rte).relid, &frame);
         }
