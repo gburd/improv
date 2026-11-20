@@ -15,7 +15,7 @@ transaction. The desktop apps open a Postgres-hosted model directly:
 
 ## Install
 
-Supports Postgres **15, 16, 17 and 18**. Three ways to get it:
+Supports Postgres **15, 16, 17, 18 and 19**. Three ways to get it:
 
 - **Binary:** each release ([GitHub](https://github.com/gburd/improv/releases),
   [Codeberg](https://codeberg.org/gregburd/improv/releases))
@@ -24,13 +24,13 @@ Supports Postgres **15, 16, 17 and 18**. Three ways to get it:
   under the paths `pg_config` reports).
 - **PGXN:** `pgxn download pg_improv`, then build it as below. It is a pgrx
   (Rust) extension, so it builds with `cargo pgrx`, not `make`.
-- **Source:** needs `cargo-pgrx` 0.19.3 (`cargo install cargo-pgrx --version
-  0.19.3 --locked && cargo pgrx init --pg17 $(which pg_config)`).
+- **Source:** needs `cargo-pgrx` 0.19.4 (`cargo install cargo-pgrx --version
+  0.19.4 --locked && cargo pgrx init --pg17 $(which pg_config)`).
 
 ```sh
 cd crates/pg_improv
 cargo pgrx install --release --pg-config $(which pg_config)    # PG 17 (default)
-cargo pgrx install --release --no-default-features --features pg18 \
+cargo pgrx install --release --no-default-features --features pg19 \
   --pg-config /usr/lib/postgresql/18/bin/pg_config              # another major
 cargo pgrx test pg17                                             # the extension's tests
 ```

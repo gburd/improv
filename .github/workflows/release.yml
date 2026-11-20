@@ -206,7 +206,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        pg: [15, 16, 17, 18]
+        pg: [15, 16, 17, 18, 19]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -310,7 +310,7 @@ jobs:
           tar xzf "dist/improv-v$ver-$t.tar.gz" -C stage
           ci/glibc-floor.sh 2.28 3.4.25 "stage/improv-v$ver-$t"/improv{,-tui,-server,-gui}
           ci/packages.sh bin "$ver" "stage/improv-v$ver-$t" pkg
-          for pg in 15 16 17 18; do
+          for pg in 15 16 17 18 19; do
             ci/packages.sh pg "$ver" "$pg" "dist/pg_improv-$ver-pg$pg-x86_64-linux.tar.gz" pkg
           done
           ci/install-test.sh "$ver" pkg

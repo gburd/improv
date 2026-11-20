@@ -21,8 +21,8 @@
 #   tests/upgrade.sh (ALTER EXTENSION UPDATE from every earlier release that
 #   builds for <PGMAJOR>; each release's build is cached in PGI_OLD_CACHE,
 #   default pgi's ~/.cache/pgi-old/<version>/<major>), on PG 17 the PGXN dist
-#   build, and on PG 18 tests/pg_upgrade.sh (pg_upgrade from PG 17, which it
-#   installs too).
+#   build, and on PG 18+ tests/pg_upgrade.sh (pg_upgrade from the previous
+#   major, which it installs too).
 # Steps that need a non-root user (pgrx refuses initdb as root) run as `pgi`.
 set -euo pipefail
 pg=${1:?usage: ci/pg_improv.sh <PGMAJOR>}
@@ -132,21 +132,23 @@ if [ "$pg" -ge 17 ]; then
 fi
 
 step "tests/upgrade.sh: ALTER EXTENSION UPDATE from every release (pg$pg)"
-# (Before the PG 18 step below, which re-runs `cargo pgrx init` for PG 17.)
+# (Before the pg_upgrade step below, which re-runs `cargo pgrx init` for the
+# previous major.)
 if [ -n "${PGI_OLD_CACHE:-}" ]; then mkdir -p "$PGI_OLD_CACHE" && chown -R pgi "$PGI_OLD_CACHE"; fi
 run env PG_CONFIG="$PG_CONFIG" ${PGI_OLD_CACHE:+PGI_OLD_CACHE="$PGI_OLD_CACHE"} ./tests/upgrade.sh
 end
 
-if [ "$pg" = 18 ]; then
-	step "tests/pg_upgrade.sh: pg_upgrade 17 -> 18"
-	old=/usr/lib/postgresql/17/bin
+if [ "$pg" -ge 18 ]; then
+	old_major=$((pg - 1))
+	step "tests/pg_upgrade.sh: pg_upgrade $old_major -> $pg"
+	old=/usr/lib/postgresql/$old_major/bin
 	if [ ! -x "$old/pg_config" ]; then
-		apt-get install -y -qq --no-install-recommends postgresql-17 postgresql-server-dev-17 >/dev/null
-		chmod -R a+w /usr/share/postgresql/17/extension /usr/lib/postgresql/17/lib
+		apt-get install -y -qq --no-install-recommends "postgresql-$old_major" "postgresql-server-dev-$old_major" >/dev/null
+		chmod -R a+w "/usr/share/postgresql/$old_major/extension" "/usr/lib/postgresql/$old_major/lib"
 	fi
-	run cargo pgrx init --pg17 "$old/pg_config" >/dev/null
-	run cargo pgrx install --release --no-default-features --features pg17 --pg-config "$old/pg_config"
-	run env OLD_BIN="$old" NEW_BIN="/usr/lib/postgresql/18/bin" ./tests/pg_upgrade.sh
+	run cargo pgrx init "--pg$old_major" "$old/pg_config" >/dev/null
+	run cargo pgrx install --release --no-default-features --features "pg$old_major" --pg-config "$old/pg_config"
+	run env OLD_BIN="$old" NEW_BIN="/usr/lib/postgresql/$pg/bin" ./tests/pg_upgrade.sh
 	end
 fi
 

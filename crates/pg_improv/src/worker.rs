@@ -534,9 +534,9 @@ pub extern "C-unwind" fn improv_worker_main(_arg: pg_sys::Datum) {
     // poll ran on (D14).
     // SAFETY: installs Postgres's own handler, before any work.
     unsafe {
-        #[cfg(not(feature = "pg18"))]
+        #[cfg(any(feature = "pg15", feature = "pg16", feature = "pg17"))]
         pg_sys::pqsignal(pg_sys::SIGTERM as i32, Some(die));
-        #[cfg(feature = "pg18")]
+        #[cfg(not(any(feature = "pg15", feature = "pg16", feature = "pg17")))]
         pg_sys::pqsignal_be(pg_sys::SIGTERM as i32, Some(die));
     }
     // pg_upgrade starts both clusters in binary-upgrade mode with their

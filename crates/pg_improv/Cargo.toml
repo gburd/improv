@@ -22,10 +22,11 @@ pg15 = ["pgrx/pg15", "pgrx-tests/pg15"]
 pg16 = ["pgrx/pg16", "pgrx-tests/pg16"]
 pg17 = ["pgrx/pg17", "pgrx-tests/pg17"]
 pg18 = ["pgrx/pg18", "pgrx-tests/pg18"]
+pg19 = ["pgrx/pg19", "pgrx-tests/pg19"]
 pg_test = []
 
 [dependencies]
-pgrx = "=0.19.3"
+pgrx = "=0.19.4"
 improv_core_model = { path = "../core_model" }
 improv_engine = { path = "../engine" }
 improv_nl_formula = { path = "../nl_formula" }
@@ -35,7 +36,7 @@ libc = "0.2"
 serde_json = "1"
 
 [dev-dependencies]
-pgrx-tests = "=0.19.3"
+pgrx-tests = "=0.19.4"
 
 [profile.dev]
 panic = "unwind"

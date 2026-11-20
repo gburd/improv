@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
-# pg_upgrade of a cluster with Improv models, PG 17 -> 18 (D2). A PG 17
-# cluster has a model in each sync mode (logical, trigger, commit, manual)
-# and pg_improv installed in both majors. pg_upgrade --check, then the
-# upgrade itself. PG 17+ carries the logical slot when it is caught up and
-# the new cluster has wal_level = logical. Then every model is checked:
+# pg_upgrade of a cluster with Improv models, OLD_BIN -> NEW_BIN (D2). The
+# old cluster has a model in each sync mode (logical, trigger, commit,
+# manual) and pg_improv installed in both majors. pg_upgrade --check, then
+# the upgrade itself. PG 17+ carries the logical slot when it is caught up
+# and the new cluster has wal_level = logical. Then every model is checked:
 # its results equal a fresh recalc, and each mode still works (the logical
 # model follows writes on the carried slot, without a new slot or a
 # rebuild; the trigger and commit models recompute in the writer's
-# transaction; the manual model refreshes by recalc).
+# transaction; the manual model refreshes by recalc). Used for both
+# 17 -> 18 and 18 -> 19.
 #
 #   crates/pg_improv/tests/pg_upgrade.sh
 #
@@ -16,6 +17,9 @@
 set -euo pipefail
 OLD_BIN=${OLD_BIN:-/usr/lib/postgresql/17/bin}
 NEW_BIN=${NEW_BIN:-/usr/lib/postgresql/18/bin}
+# The new cluster's major, read from its own pg_config so the assertion
+# follows OLD_BIN/NEW_BIN rather than a hard-coded pair.
+NEW_MAJOR=$("$NEW_BIN/pg_config" --version | awk '{print $2}' | cut -d. -f1)
 BASE=${PGI_DATA:-$HOME/pgi-pg-upgrade}
 P=${PGI_PORT:-55450}
 DB=improv_e2e
@@ -87,8 +91,9 @@ old_slot=$(q "SELECT confirmed_flush_lsn FROM pg_replication_slots WHERE slot_na
 echo "ok: PG 17 cluster with a model in each sync mode (slot at $old_slot)"
 "$OLD_BIN/pg_ctl" -D "$BASE/old" stop -m fast >/dev/null
 
-# ---- pg_upgrade to PG 18 ----------------------------------------------------
-# PG 18's initdb enables data checksums by default; match the old cluster
+# ---- pg_upgrade to the new major -------------------------------------------
+# PG 18+ initdb enables data checksums by default; match the old cluster
+# so pg_upgrade --check does not reject a checksum mismatch.
 checksums=$("$OLD_BIN/pg_controldata" "$BASE/old" | awk '/checksum version/ {print $NF}')
 [ "$checksums" = 0 ] && nock=--no-data-checksums || nock=
 "$NEW_BIN/initdb" -D "$BASE/new" -A trust -U improv $nock >/dev/null
@@ -99,12 +104,12 @@ cd "$BASE/work"
 "$NEW_BIN/pg_upgrade" -U improv -b "$OLD_BIN" -B "$NEW_BIN" -d "$BASE/old" -D "$BASE/new" \
 	-p "$P" -P "$P" -s "$BASE" >"$BASE/upgrade.log" 2>&1 || { cat "$BASE/upgrade.log"; exit 1; }
 cd - >/dev/null
-echo "ok: pg_upgrade --check and pg_upgrade 17 -> 18"
+echo "ok: pg_upgrade --check and pg_upgrade to PG $NEW_MAJOR"
 
-# ---- PG 18 ------------------------------------------------------------------
+# ---- the new cluster --------------------------------------------------------
 BIN=$NEW_BIN LOG=$BASE/new.log
 "$NEW_BIN/pg_ctl" -D "$BASE/new" -l "$LOG" -w start >/dev/null 3>&-
-eq "$(q "SELECT current_setting('server_version_num')::int / 10000")" 18 "the new cluster is PG 18"
+eq "$(q "SELECT current_setting('server_version_num')::int / 10000")" "$NEW_MAJOR" "the new cluster is PG $NEW_MAJOR"
 eq "$(q "SELECT count(*) FROM pg_replication_slots WHERE slot_name = 'improv_db' AND plugin = 'pgoutput'")" 1 \
 	"pg_upgrade carried the improv_db slot"
 for m in $MODES; do eq "$(q "$(res $m)")" "$(q "$(want $m)")" "m_$m's results after the upgrade"; done
@@ -112,20 +117,20 @@ logpos=0
 # logical: the worker continues on the carried slot
 q "UPDATE f_logical SET n = n + 10 WHERE id = 2"
 q "INSERT INTO f_logical VALUES (100, 'k9', 5)"
-wait_for "$(res logical)" "$(q "$(want logical)")" "m_logical follows writes on PG 18"
+wait_for "$(res logical)" "$(q "$(want logical)")" "m_logical follows writes on PG $NEW_MAJOR"
 grep -q "created the slot improv_db" "$LOG" && fail "the worker made a new slot (the carried one was not used)"
 eq "$(q "SELECT last_error IS NULL FROM improv.status('m_logical')")" t "m_logical's status"
 # trigger and commit: results move in the writer's transaction
 for m in trigger commit; do
 	q "UPDATE f_$m SET n = n + 10 WHERE id = 2"
-	eq "$(q "$(res $m)")" "$(q "$(want $m)")" "m_$m recomputes in the writer's transaction on PG 18"
+	eq "$(q "$(res $m)")" "$(q "$(want $m)")" "m_$m recomputes in the writer's transaction on PG $NEW_MAJOR"
 done
 # manual: a recalc refreshes it
 q "UPDATE f_manual SET n = n + 10 WHERE id = 2"
 q "SELECT improv.recalc('m_manual')" >/dev/null
-eq "$(q "$(res manual)")" "$(q "$(want manual)")" "m_manual after recalc on PG 18"
+eq "$(q "$(res manual)")" "$(q "$(want manual)")" "m_manual after recalc on PG $NEW_MAJOR"
 eq "$(q "SELECT sum(improv.recalc(name)) FROM improv.model")" 0 "every model equals a fresh recalc"
 q "SELECT improv.define('m_logical','U = N * 3')" >/dev/null
 wait_for "SELECT count(*) FROM improv_m_logical.u" "$(q "SELECT count(DISTINCT k) FROM f_logical")" "a define after the upgrade"
-echo "ok: PG 18: every model equals a fresh recalc; logical continues on the carried slot; trigger, commit and manual work"
+echo "ok: PG $NEW_MAJOR: every model equals a fresh recalc; logical continues on the carried slot; trigger, commit and manual work"
 echo "PASS"

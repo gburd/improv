@@ -38,7 +38,7 @@ which to reach for and when.
 ## Status
 
 Version 0.14.0 builds and passes its tests on Linux, macOS and Windows;
-the Postgres extension supports Postgres 15 to 18. The next release (0.15,
+the Postgres extension supports Postgres 15 to 19. The next release (0.15,
 on `main`) adds access policies, the web GUI, DuckDB-hosted and
 server-hosted models, a Windows installer, and web accessibility. External functions in Python, R,
 Julia or Pure run under a bubblewrap sandbox on Linux; WebAssembly functions

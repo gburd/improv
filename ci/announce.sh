@@ -67,7 +67,7 @@ background worker on logical decoding (writers pay nothing; at 100k cells a
 one-row change is visible ~50 ms after commit), by triggers inside the
 writer's transaction, or by an explicit improv.recalc() in your snapshot.
 It also adds LANGUAGE improv, so a SQL function can be written as a formula.
-It supports PostgreSQL 15, 16, 17 and 18.
+It supports PostgreSQL 15, 16, 17, 18 and 19.
 
 Changes in ${VERSION}:
 

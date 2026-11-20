@@ -7,6 +7,9 @@ this project follows [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **pg_improv supports PostgreSQL 19.** The extension builds, tests, and
+  ships for PG 19 alongside 15 to 18 (pgrx 0.19.4); CI runs the full
+  per-major gate on 19 and tests pg_upgrade from 18 to 19.
 - **The Android app is now a generic multidimensional-workbook app.** It
   opens on a workbook library listing the models stored on the device, with
   create (blank `Period x Department` starter or the `Time x Product x
@@ -107,6 +110,10 @@ this project follows [Semantic Versioning](https://semver.org/).
   descriptions inside two MIT crates.
 
 ### Changed
+- **Dependencies refreshed.** The workspace, fuzz, and DuckDB extension
+  lockfiles take the current compatible releases (including the pgrx 0.19.4
+  security update, CVE-2026-6460); the property-test engine moves to
+  hegeltest 0.54. The COSMIC GUI keeps its pinned graph.
 - **The workspace, the DuckDB extension and the COSMIC GUI move to
   0.15.0,** to match pg_improv (which led with its 0.14.0->0.15.0 catalog
   upgrade). All components of a release carry one version again.
