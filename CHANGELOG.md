@@ -198,6 +198,8 @@ this project follows [Semantic Versioning](https://semver.org/).
   (`docs/reviews/2026-11-09-mentat-1.20-upgrade.md`).
 
 ### Security
+- **url 2.5.9** closes RUSTSEC-2026-0592, a stack overflow in
+  `Url::origin()` on deeply nested `blob:` URLs.
 
 - **cargo-deny: chrono's unmaintained advisory (RUSTSEC-2026-0543) is
   ignored,** with a reason in `deny.toml`. chrono has no safe upgrade or
