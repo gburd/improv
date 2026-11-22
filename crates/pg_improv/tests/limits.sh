@@ -164,12 +164,24 @@ echo "ok: disk full: logical mode reports it in last_error, writes nothing parti
 # with a logged reason and a last_error (and keeps no live state), never
 # grown until the backend is killed; the other models stay in sync; raised,
 # it catches up.
-"$PG_BIN/pg_ctl" -D "$D/data" stop -m fast >/dev/null
-start
-q "SELECT improv.set_sync_mode('d', 'logical')"
-# (the worker builds a model's live state on its first change)
-q "INSERT INTO big VALUES ('l', 1)"
-wait_for "$DW" 150002 "d in logical mode"
+# The trigger-mode cluster above still runs under ulimit -f 20480, and
+# improv_d.w's file is already ~87 MB on disk (built uncapped), so any stop
+# that must flush its dirty pages exceeds the cap: PG 19's checkpointer
+# FATALs ("File too large") where PG 18 tolerated it. Drop model d first,
+# which unlinks that file (no write extends anything, so it works under the
+# cap); the capped cluster then stops cleanly. Restart uncapped and rebuild
+# d from the base table at full size for the memory test.
+q "SELECT improv.drop_model('d')"
+restart
+for s in "create_model('d')" "bind_category('d','K','big','k')" \
+	"bind_measure('d','V','big','v')" "define('d','W = V * 1')"; do
+	q "SELECT improv.$s" >/dev/null
+done
+# Build d's result from the base now: a fresh logical model builds its live
+# state on its first decoded change, and nothing writes to big after the
+# recreate, so force the initial load with a recalc.
+q "SELECT improv.recalc('d')" >/dev/null
+wait_for "$DW" 150001 "d rebuilt from the base at full size" 90
 wait_for "SELECT fold_bytes = 0 AND engine_bytes > 150000 * 200 FROM improv.status('d')" t \
 	"status shows d's engine memory (150k cells)"
 eq "$(q "SELECT engine_bytes > 0 AND engine_bytes < 1e6 FROM improv.status('plan')")" t \
@@ -179,8 +191,9 @@ for s in "create_model('agg')" "bind_category('agg','K','ev','k')" \
 	"bind_measure('agg','V','ev','v', agg => 'count_distinct')" "define('agg','W = V * 1')"; do
 	q "SELECT improv.$s" >/dev/null
 done
+q "SELECT improv.recalc('agg')" >/dev/null
 wait_for "SELECT count(*) FROM improv_agg.w" 50000 "agg in sync"
-wait_for "SELECT fold_bytes > 50000 * 500 FROM improv.status('agg')" t "status shows agg's fold state (50k coordinates)"
+wait_for "SELECT fold_bytes > 50000 * 500 FROM improv.status('agg')" t "status shows agg's fold state (50k coordinates)" 120
 echo "   status: $(q "SELECT 'd: ' || pg_size_pretty(d.engine_bytes) || ' engine; agg: ' || pg_size_pretty(a.fold_bytes) || ' fold + ' || pg_size_pretty(a.engine_bytes) || ' engine' FROM improv.status('d') d, improv.status('agg') a")"
 logpos=$(wc -c <"$D/log")
 q "ALTER SYSTEM SET improv.max_model_memory = '20MB'"
@@ -191,7 +204,7 @@ wait_for "SELECT coalesce(last_error, '') LIKE '%over improv.max_model_memory = 
 echo "   last_error: $(q "SELECT last_error FROM improv.status('d')")"
 since "$logpos" | grep -q "pg_improv sync: model d: the live state needs about .* over improv.max_model_memory" \
 	|| fail "the refusal is not logged"
-eq "$(q "SELECT count(*) FROM improv_d.w")" 150002 "d's results are left as they were"
+eq "$(q "SELECT count(*) FROM improv_d.w")" 150001 "d's results are left as they were"
 q "UPDATE sales SET v = 7 WHERE k = 'a'"
 wait_for "$PLAN" 14 "a model under the cap stays in sync"
 eq "$(q "SELECT last_error IS NULL FROM improv.status('plan')")" t "plan has no error"
@@ -199,7 +212,7 @@ eq "$(q "SELECT pid FROM pg_stat_activity WHERE backend_type = 'pg_improv sync'"
 	"$(q "SELECT pid FROM pg_stat_activity WHERE backend_type = 'pg_improv sync'")" "the worker keeps running"
 q "ALTER SYSTEM RESET improv.max_model_memory"
 q "SELECT pg_reload_conf()" >/dev/null
-wait_for "$DW" 150003 "under no cap, d catches up" 90
+wait_for "$DW" 150002 "under no cap, d catches up" 90
 wait_for "SELECT last_error IS NULL FROM improv.status('d')" t "d's error clears"
 echo "ok: improv.max_model_memory: status shows each model's fold and engine memory; a model over the cap is refused with a logged reason and a last_error, the others stay in sync, and it recovers once the cap allows it"
 echo PASS
