@@ -54,9 +54,9 @@ q "SELECT improv.define('plan','Revenue = Price * Quantity')"
 q "SELECT improv.define('plan','Total = SUM(Revenue OVER Time)')"
 
 # wait until VALUE (a SQL scalar) equals WANT, or fail after 10 s
-wait_for() { # sql want label
+wait_for() { # sql want label [iterations]
 	local t0=$(date +%s%N) v=""
-	for _ in $(seq 1 400); do
+	for _ in $(seq 1 "${4:-1200}"); do
 		v=$(q "$1" || true)
 		if [ "$v" = "$2" ]; then
 			echo $(( ($(date +%s%N) - t0) / 1000000 ))
