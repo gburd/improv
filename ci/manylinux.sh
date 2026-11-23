@@ -40,6 +40,13 @@ if [ ! -x "$CARGO_HOME/bin/rustup" ]; then
 		sh -s -- -y -q --profile minimal --default-toolchain none --no-modify-path >/dev/null
 fi
 rustup -q toolchain install stable --profile minimal >/dev/null
+# A cached CARGO_HOME can hold a half-installed stable (missing manifest:
+# "error reading rustc version"), which the install above leaves alone.
+# If stable does not actually run, uninstall and reinstall it clean.
+if ! rustc +stable --version >/dev/null 2>&1; then
+	rustup -q toolchain uninstall stable >/dev/null 2>&1 || true
+	rustup -q toolchain install stable --profile minimal >/dev/null
+fi
 rustup -q default stable
 rustc --version
 exec "$@"'
