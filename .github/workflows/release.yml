@@ -199,6 +199,9 @@ jobs:
   # Built in manylinux_2_28 (EL8) against yum.postgresql.org's
   # postgresql<N>-devel (ci/pg_improv-dist.sh), so the .so needs at most
   # glibc 2.28; the packages job loads it into Debian's and EL's servers.
+  # Postgres 19 is the exception: PGDG ships postgresql19-devel for EL9+
+  # only, so it builds in manylinux_2_34 (EL9) and its .so needs glibc 2.34,
+  # which is fine because PG 19 itself runs only on EL9+ / glibc 2.34+.
   extension:
     name: Extension (PG ${{ matrix.pg }})
     runs-on: ubuntu-latest
@@ -217,6 +220,9 @@ jobs:
         env:
           PG: ${{ matrix.pg }}
           REF_NAME: ${{ github.ref_name }}
+          # manylinux_2_34 (EL9) for PG 19, which has no EL8 PGDG package;
+          # empty (the ci/manylinux.sh default, EL8) for the rest.
+          MANYLINUX_IMAGE: ${{ matrix.pg == 19 && 'quay.io/pypa/manylinux_2_34_x86_64@sha256:994ad4b59d4eb3be4b84f177b001ef8d5fea57b81e83b4f9171dfcc4a6d6bdee' || '' }}
         run: |
           set -euo pipefail
           if [ "$GITHUB_REF_TYPE" = tag ]; then

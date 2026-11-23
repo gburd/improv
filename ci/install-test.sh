@@ -12,13 +12,14 @@
 #   pg-deb:<image>:<N>  postgresql-<N>-improv on apt.postgresql.org's postgresql-<N>
 #   pg-rpm:<image>:<N>  postgresql<N>-improv on yum.postgresql.org's postgresql<N>-server
 # pg_improv runs PG 17 on debian:12, ubuntu:22.04, rockylinux:8 and
-# rockylinux:9, and PG 15, 16 and 18 on debian:12 and rockylinux:8.
+# rockylinux:9, PG 15, 16 and 18 on debian:12 and rockylinux:8, and PG 19
+# on debian:13 and rockylinux:9 (PGDG ships it for EL9+ only).
 #
 # improv: --version, a model built and evaluated with the CLI, improv-tui
 # --version, improv-server --help, improv-gui --version (it parses its
 # arguments before it needs a display). pg_improv: initdb, start, CREATE
 # EXTENSION, a model over a table, recalc, its result read back. Both
-# formats carry the same pg_improv .so (built on EL8 by
+# formats carry the same pg_improv .so (built on EL8, or EL9 for PG 19, by
 # ci/pg_improv-dist.sh), so this also proves it loads into Debian's and
 # EL's server builds of the major.
 #
@@ -85,7 +86,8 @@ if [ ${#tests[@]} -eq 0 ]; then
 		rpm:rockylinux:8 rpm:rockylinux:9 rpm:almalinux:10 rpm:fedora:latest
 		pg-deb:debian:12:17 pg-deb:ubuntu:22.04:17 pg-rpm:rockylinux:8:17 pg-rpm:rockylinux:9:17
 		pg-deb:debian:12:15 pg-deb:debian:12:16 pg-deb:debian:12:18
-		pg-rpm:rockylinux:8:15 pg-rpm:rockylinux:8:16 pg-rpm:rockylinux:8:18)
+		pg-rpm:rockylinux:8:15 pg-rpm:rockylinux:8:16 pg-rpm:rockylinux:8:18
+		pg-deb:debian:13:19 pg-rpm:rockylinux:9:19)
 fi
 image() {
 	case $1 in

@@ -22,7 +22,10 @@
 # that is the calling user.
 set -euo pipefail
 # 2026.10.26-1. A newer image is fine; ci/glibc-floor.sh checks its output.
-image=quay.io/pypa/manylinux_2_28_x86_64@sha256:e0adf18521ad35192df733a6c62d35df7801957d24e0470238aacecfab2188a3
+# MANYLINUX_IMAGE overrides it, for an EL9 image (manylinux_2_34) when a
+# build needs a package PGDG ships only for EL9+ (Postgres 19's
+# postgresql19-devel, say); its output then needs glibc 2.34.
+image=${MANYLINUX_IMAGE:-quay.io/pypa/manylinux_2_28_x86_64@sha256:e0adf18521ad35192df733a6c62d35df7801957d24e0470238aacecfab2188a3}
 root=$(cd "$(dirname "$0")/.." && pwd)
 target=$root/target/manylinux home=$root/target/manylinux-home
 registry=${CARGO_HOME:-$HOME/.cargo}/registry
