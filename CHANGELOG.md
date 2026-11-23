@@ -6,6 +6,8 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-11-23
+
 ### Added
 - **pg_improv supports PostgreSQL 19.** The extension builds, tests, and
   ships for PG 19 alongside 15 to 18 (pgrx 0.19.4); CI runs the full
@@ -3381,7 +3383,8 @@ Improv becomes buildable by anyone who clones it.
 - Project infrastructure: workspace, `rustfmt.toml`, `clippy.toml`, `deny.toml`,
   `.typos.toml`, CI, dual license (Apache-2.0 OR MIT), contributor guide.
 
-[Unreleased]: https://codeberg.org/gregburd/improv/compare/v0.14.0...main
+[Unreleased]: https://codeberg.org/gregburd/improv/compare/v0.15.0...main
+[0.15.0]: https://codeberg.org/gregburd/improv/compare/v0.14.0...v0.15.0
 [0.14.0]: https://codeberg.org/gregburd/improv/compare/v0.13.0...v0.14.0
 [0.13.0]: https://codeberg.org/gregburd/improv/compare/v0.12.2...v0.13.0
 [0.12.2]: https://codeberg.org/gregburd/improv/compare/v0.12.1...v0.12.2
